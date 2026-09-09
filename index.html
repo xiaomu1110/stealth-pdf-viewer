@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title id="page-title">Spring Boot Admin - Service Metrics (prod-cluster)</title>
+  <!-- 伪装成服务监控图标 -->
+  <link rel="icon" id="page-favicon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='4' fill='%23238636'/><path d='M7 9l4 3-4 3M13 15h4' stroke='%23ffffff' stroke-width='2' fill='none' stroke-linecap='round'/></svg>">
+  
+  <script src="./lib/pdf.min.js"></script>
+  <script src="./lib/pdf-lib.min.js"></script>
+
+  <style>
+    :root {
+      --bg-color: #1e1e1e;
+      --bar-bg: #252526;
+      --border-color: #3c3c3c;
+      --text-color: #cccccc;
+      --accent-color: #007acc;
+      --active-btn: #37373d;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Consolas, monospace;
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* 顶部伪装状态栏 */
+    #top-bar {
+      height: 38px;
+      background-color: var(--bar-bg);
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 10px;
+      font-size: 12px;
+      z-index: 100;
+    }
+
+    .bar-group {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-color);
+      padding: 3px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.12s;
+    }
+    .btn:hover {
+      background-color: #2a2d2e;
+      border-color: var(--border-color);
+    }
+    .btn.active {
+      background-color: var(--active-btn);
+      border-color: var(--accent-color);
+      color: #58a6ff;
+    }
+    .btn-danger {
+      color: #f85149;
+    }
+    .btn-danger:hover {
+      background-color: rgba(248, 81, 73, 0.15);
+    }
+
+    .separator {
+      width: 1px;
+      height: 16px;
+      background-color: var(--border-color);
+      margin: 0 4px;
+    }
+
+    /* 伪装路径提示 (点击可轮换伪装身份) */
+    .stealth-path {
+      color: #858585;
+      font-family: Consolas, monospace;
+      font-size: 11px;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+    .stealth-path:hover {
+      background: #333;
+      color: #58a6ff;
+    }
+
+    /* 主视口 */
+    #main-viewport {
+      flex: 1;
+      position: relative;
+      overflow: auto;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 16px;
+      background-color: var(--bg-color);
+    }
+
+    #page-wrapper {
+      position: relative;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+      border-radius: 2px;
+      transform-origin: top center;
+    }
+
+    /* PDF与涂鸦层严格对齐 */
+    #pdf-canvas, #draw-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      display: block;
+    }
+    #draw-canvas {
+      z-index: 10;
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    /* 隐蔽过滤模式 (工位防窥核心) */
+    /* 1. 暗色代码模式：白底黑字反色为VS Code暗黑风格，远处看就是代码/文档 */
+    .filter-dark-ide {
+      filter: invert(0.92) hue-rotate(180deg) contrast(0.9) brightness(0.85);
+    }
+    /* 2. 超低对比度防窥：字迹变淡，超过1米完全看不清内容 */
+    .filter-low-contrast {
+      filter: contrast(0.5) brightness(0.72) opacity(0.8);
+    }
+
+    /* 空状态 */
+    #empty-state {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      border: 2px dashed #3c3c3c;
+      padding: 36px 54px;
+      border-radius: 8px;
+      background: rgba(37, 37, 38, 0.6);
+      cursor: pointer;
+    }
+    #empty-state:hover {
+      border-color: #58a6ff;
+    }
+
+    /* 调色与画笔悬浮条 */
+    #brush-bar {
+      position: fixed;
+      bottom: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #252526;
+      border: 1px solid #3c3c3c;
+      padding: 5px 12px;
+      border-radius: 20px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.6);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      z-index: 1000;
+      opacity: 0.94;
+    }
+    .color-dot {
+      width: 17px;
+      height: 17px;
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: transform 0.1s;
+    }
+    .color-dot:hover {
+      transform: scale(1.2);
+    }
+    .color-dot.selected {
+      border-color: #ffffff;
+      transform: scale(1.25);
+    }
+
+    /* 紧急全屏老板键 (纯正 VS Code 源码全屏遮罩) */
+    #boss-screen {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: #1e1e1e;
+      z-index: 9999999;
+      display: none;
+      flex-direction: column;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+      color: #9cdcfe;
+      padding: 12px 18px;
+      overflow: hidden;
+      line-height: 1.55;
+      user-select: none;
+    }
+    .code-tab-bar {
+      display: flex;
+      gap: 1px;
+      margin-bottom: 12px;
+      border-bottom: 1px solid #333;
+      padding-bottom: 6px;
+    }
+    .code-tab {
+      background: #2d2d2d;
+      padding: 4px 12px;
+      color: #fff;
+      font-size: 12px;
+      border-top: 2px solid #007acc;
+    }
+    .code-line { display: flex; }
+    .line-no { color: #858585; width: 36px; text-align: right; margin-right: 18px; }
+    .kw { color: #c586c0; }
+    .str { color: #ce9178; }
+    .fn { color: #dcdcaa; }
+    .com { color: #6a9955; font-style: italic; }
+    .cur {
+      display: inline-block;
+      width: 7px;
+      height: 15px;
+      background: #aeafad;
+      vertical-align: text-bottom;
+      animation: blink 1s infinite;
+    }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+  </style>
+</head>
+<body>
+
+  <!-- 顶部状态栏 -->
+  <div id="top-bar">
+    <div class="bar-group">
+      <span class="stealth-path" id="stealth-title-badge" onclick="cycleDisguise()" title="点击切换伪装身份">
+        📂 ~/cluster/router/service_metrics.go
+      </span>
+      <span class="separator"></span>
+
+      <input type="file" id="file-input" accept="application/pdf" style="display: none;">
+      <button class="btn" onclick="document.getElementById('file-input').click()" title="打开PDF (Ctrl+O)">
+        📁 打开题册
+      </button>
+
+      <button class="btn" id="btn-save" onclick="savePdf()" title="导出带涂鸦答案的PDF (Ctrl+S)">
+        💾 保存题册
+      </button>
+      
+      <span class="separator"></span>
+
+      <!-- 翻页控制 -->
+      <button class="btn" onclick="prevPage()" title="上一页 (快捷键 A / ←)">◀</button>
+      <span id="page-indicator" style="font-size: 12px; color: #858585; min-width: 50px; text-align: center;">0 / 0</span>
+      <button class="btn" onclick="nextPage()" title="下一页 (快捷键 D / →)">▶</button>
+      <input type="number" id="page-jump" min="1" style="width: 44px; background: #1e1e1e; border: 1px solid #3c3c3c; color: #fff; border-radius: 3px; text-align: center; font-size: 11px; padding: 2px;" placeholder="跳转">
+    </div>
+
+    <!-- 伪装与画笔工具 -->
+    <div class="bar-group">
+      <button class="btn active" id="btn-mode-pen" onclick="setTool('pen')" title="画笔 (快捷键 1)">✏️ 笔</button>
+      <button class="btn" id="btn-mode-highlighter" onclick="setTool('highlighter')" title="荧光标记 (快捷键 2)">🖍️ 荧光标记</button>
+      <button class="btn" id="btn-mode-eraser" onclick="setTool('eraser')" title="橡皮擦 (快捷键 3)">🧹 橡皮</button>
+      <button class="btn" onclick="undo()" title="撤销 (Ctrl+Z)">↩ 撤销</button>
+      <button class="btn btn-danger" onclick="clearCurrentPageDoodles()" title="清空当前页涂鸦">🗑️ 清页</button>
+
+      <span class="separator"></span>
+
+      <!-- 隐蔽模式切换 -->
+      <button class="btn" id="btn-stealth-ide" onclick="toggleFilter('dark-ide')" title="代码黑模式：将白纸黑字反转为深色IDE代码风格">
+        🕶️ 代码黑
+      </button>
+      <button class="btn" id="btn-stealth-ghost" onclick="toggleFilter('low-contrast')" title="防窥淡化：降低对比度与透明度，1米外完全看不清">
+        🌫️ 防窥淡化
+      </button>
+
+      <span class="separator"></span>
+
+      <!-- 紧急老板键 -->
+      <button class="btn" onclick="toggleBoss()" style="color: #4ec9b0; border-color: #3c3c3c; font-weight: 500;" title="紧急切全屏假代码 (按 Esc 或 ` 或双击顶栏)">
+        🚨 老板键 (Esc)
+      </button>
+
+      <!-- 缩放控制 -->
+      <span class="separator"></span>
+      <button class="btn" onclick="zoomChange(-0.15)" title="缩小">-</button>
+      <span id="zoom-text" style="font-size: 11px; color: #858585; min-width: 38px; text-align: center;">125%</span>
+      <button class="btn" onclick="zoomChange(0.15)" title="放大">+</button>
+    </div>
+  </div>
+
+  <!-- 主视口 -->
+  <div id="main-viewport" ondragover="event.preventDefault()" ondrop="handleDrop(event)">
+    <div id="empty-state" onclick="document.getElementById('file-input').click()">
+      <div style="font-size: 36px; margin-bottom: 10px;">📑</div>
+      <div style="font-weight: 600; font-size: 15px; color: #e1e4e8;">点击或拖拽考公 PDF 题册至此</div>
+      <p style="margin-top: 8px; color: #858585; font-size: 12px;">纯浏览器本地解析与涂鸦，不经网络传输，安全隐蔽</p>
+      <p style="margin-top: 14px; font-size: 11px; color: #6e7681;">
+        常用快捷键：<b>Esc</b> 紧急老板键 | <b>A/D</b> 翻页 | <b>Ctrl+Z</b> 撤销 | <b>Ctrl+S</b> 保存
+      </p>
+    </div>
+
+    <div id="page-wrapper" style="display: none;">
+      <canvas id="pdf-canvas"></canvas>
+      <canvas id="draw-canvas"></canvas>
+    </div>
+  </div>
+
+  <!-- 底部快捷调色条 -->
+  <div id="brush-bar">
+    <span style="font-size: 11px; color: #858585;">颜色:</span>
+    <div class="color-dot selected" style="background: #e06c75;" onclick="setColor('#e06c75')" title="红笔做题批改"></div>
+    <div class="color-dot" style="background: #61afef;" onclick="setColor('#61afef')" title="蓝笔标记"></div>
+    <div class="color-dot" style="background: #98c379;" onclick="setColor('#98c379')" title="绿笔标注"></div>
+    <div class="color-dot" style="background: #858585;" onclick="setColor('#858585')" title="隐蔽铅笔灰 (极似代码)"></div>
+    <div class="color-dot" style="background: #e5c07b;" onclick="setColor('#e5c07b')" title="亮黄高亮"></div>
+    
+    <span class="separator"></span>
+    <span style="font-size: 11px; color: #858585;">粗细:</span>
+    <button class="btn" id="btn-size-thin" onclick="setLineWidth(1.5)" style="padding: 1px 5px; font-size: 11px;">细</button>
+    <button class="btn active" id="btn-size-mid" onclick="setLineWidth(2.5)" style="padding: 1px 5px; font-size: 11px;">中</button>
+    <button class="btn" id="btn-size-thick" onclick="setLineWidth(5)" style="padding: 1px 5px; font-size: 11px;">粗</button>
+    
+    <span class="separator"></span>
+    <span style="font-size: 11px; color: #58a6ff; cursor: pointer;" onclick="toggleBoss()">[Esc: 假代码]</span>
+  </div>
+
+  <!-- 紧急全屏伪装老板界面 -->
+  <div id="boss-screen" onclick="toggleBoss()">
+    <div class="code-tab-bar">
+      <div class="code-tab">service_metrics.go</div>
+      <div style="background: #252526; padding: 4px 12px; color: #858585; font-size: 12px;">cluster_scheduler.go</div>
+      <div style="background: #252526; padding: 4px 12px; color: #858585; font-size: 12px;">config.yaml</div>
+    </div>
+    <div class="code-line"><span class="line-no">1</span><span class="com">// Cluster router metrics processor - prod v2.4.1</span></div>
+    <div class="code-line"><span class="line-no">2</span><span class="kw">package</span> main</div>
+    <div class="code-line"><span class="line-no">3</span></div>
+    <div class="code-line"><span class="line-no">4</span><span class="kw">import</span> (</div>
+    <div class="code-line"><span class="line-no">5</span>    <span class="str">"context"</span></div>
+    <div class="code-line"><span class="line-no">6</span>    <span class="str">"sync"</span></div>
+    <div class="code-line"><span class="line-no">7</span>    <span class="str">"time"</span></div>
+    <div class="code-line"><span class="line-no">8</span>)</div>
+    <div class="code-line"><span class="line-no">9</span></div>
+    <div class="code-line"><span class="line-no">10</span><span class="kw">type</span> <span class="fn">ProxyController</span> <span class="kw">struct</span> {</div>
+    <div class="code-line"><span class="line-no">11</span>    mu      sync.RWMutex</div>
+    <div class="code-line"><span class="line-no">12</span>    active  map[<span class="str">string</span>]*SessionContext</div>
+    <div class="code-line"><span class="line-no">13</span>}</div>
+    <div class="code-line"><span class="line-no">14</span></div>
+    <div class="code-line"><span class="line-no">15</span><span class="kw">func</span> (c *<span class="fn">ProxyController</span>) <span class="fn">DispatchRoutine</span>(ctx context.Context, payload []<span class="kw">byte</span>) <span class="kw">error</span> {</div>
+    <div class="code-line"><span class="line-no">16</span>    c.mu.Lock()</div>
+    <div class="code-line"><span class="line-no">17</span>    <span class="kw">defer</span> c.mu.Unlock()</div>
+    <div class="code-line"><span class="line-no">18</span>    <span class="com">// Sync chunk stream buffers across partitions</span></div>
+    <div class="code-line"><span class="line-no">19</span>    <span class="kw">select</span> {</div>
+    <div class="code-line"><span class="line-no">20</span>    <span class="kw">case</span> &lt;-ctx.Done():</div>
+    <div class="code-line"><span class="line-no">21</span>        <span class="kw">return</span> ctx.Err()</div>
+    <div class="code-line"><span class="line-no">22</span>    <span class="kw">default</span>:</div>
+    <div class="code-line"><span class="line-no">23</span>        time.Sleep(12 * time.Millisecond)</div>
+    <div class="code-line"><span class="line-no">24</span>    }</div>
+    <div class="code-line"><span class="line-no">25</span>    <span class="kw">return</span> <span class="kw">nil</span></div>
+    <div class="code-line"><span class="line-no">26</span>} <span class="cur"></span></div>
+  </div>
+
+  <script>
+    // 配置 PDF.js worker
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = './lib/pdf.worker.min.js';
+    }
+
+    // 状态管理
+    let pdfDoc = null;
+    let originalPdfBytes = null;
+    let originalFileName = "questions.pdf";
+    let currentPageNum = 1;
+    let totalPages = 0;
+    let currentScale = 1.25;
+    let currentFilter = '';
+
+    // 涂鸦控制
+    let currentTool = 'pen'; // 'pen', 'highlighter', 'eraser'
+    let currentColor = '#e06c75';
+    let currentLineWidth = 2.5;
+    let isDrawing = false;
+    let lastX = 0;
+    let lastY = 0;
+
+    // 页面涂鸦记录与撤销栈
+    const pageDoodles = new Map(); // pageNum -> dataURL
+    const pageHasDoodles = new Set(); // 真正有笔迹的页码集合
+    const undoStacks = new Map(); // pageNum -> Array<dataURL>
+
+    const pdfCanvas = document.getElementById('pdf-canvas');
+    const drawCanvas = document.getElementById('draw-canvas');
+    const pdfCtx = pdfCanvas.getContext('2d');
+    const drawCtx = drawCanvas.getContext('2d');
+    const pageWrapper = document.getElementById('page-wrapper');
+    const emptyState = document.getElementById('empty-state');
+    const bossScreen = document.getElementById('boss-screen');
+
+    // 多种伪装身份循环切换
+    const disguises = [
+      { title: "Spring Boot Admin - Service Metrics", path: "📂 ~/cluster/router/service_metrics.go" },
+      { title: "Swagger UI - /api/v2/auth/verify", path: "📂 ~/api-docs/internal/swagger_spec.json" },
+      { title: "Kibana - Production Log Stream", path: "📂 ~/logging/pipeline/kafka_consumer.log" },
+      { title: "Jira - Sprint 48 Task Board", path: "📂 ~/sprint/backend/TASK-10492.md" }
+    ];
+    let disguiseIndex = 0;
+    function cycleDisguise() {
+      disguiseIndex = (disguiseIndex + 1) % disguises.length;
+      document.getElementById('page-title').textContent = disguises[disguiseIndex].title;
+      document.getElementById('stealth-title-badge').textContent = disguises[disguiseIndex].path;
+    }
+
+    // 文件载入
+    document.getElementById('file-input').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (file) loadPdfFile(file);
+    });
+
+    function handleDrop(e) {
+      e.preventDefault();
+      const file = e.dataTransfer.files[0];
+      if (file && file.type === 'application/pdf') {
+        loadPdfFile(file);
+      }
+    }
+
+    async function loadPdfFile(file) {
+      originalFileName = file.name;
+      const arrayBuffer = await file.arrayBuffer();
+      originalPdfBytes = new Uint8Array(arrayBuffer);
+
+      try {
+        const loadingTask = pdfjsLib.getDocument({ data: originalPdfBytes });
+        pdfDoc = await loadingTask.promise;
+        totalPages = pdfDoc.numPages;
+        currentPageNum = 1;
+        pageDoodles.clear();
+        pageHasDoodles.clear();
+        undoStacks.clear();
+
+        emptyState.style.display = 'none';
+        pageWrapper.style.display = 'block';
+        updatePageIndicator();
+        await renderPage(currentPageNum);
+      } catch (err) {
+        alert("PDF加载失败: " + err.message);
+      }
+    }
+
+    // 渲染页面
+    async function renderPage(num) {
+      if (!pdfDoc) return;
+      saveCurrentPageDrawing(); // 切换前保留画布快照
+
+      const page = await pdfDoc.getPage(num);
+      const viewport = page.getViewport({ scale: currentScale });
+      const dpr = window.devicePixelRatio || 1;
+
+      // 视口容器
+      pageWrapper.style.width = `${viewport.width}px`;
+      pageWrapper.style.height = `${viewport.height}px`;
+
+      // 底层 PDF 画布
+      pdfCanvas.width = viewport.width * dpr;
+      pdfCanvas.height = viewport.height * dpr;
+      pdfCanvas.style.width = `${viewport.width}px`;
+      pdfCanvas.style.height = `${viewport.height}px`;
+      pdfCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      // 上层涂鸦画布
+      drawCanvas.width = viewport.width * dpr;
+      drawCanvas.height = viewport.height * dpr;
+      drawCanvas.style.width = `${viewport.width}px`;
+      drawCanvas.style.height = `${viewport.height}px`;
+      drawCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      // 渲染 PDF
+      await page.render({
+        canvasContext: pdfCtx,
+        viewport: viewport
+      }).promise;
+
+      // 恢复该页历史笔迹
+      restorePageDrawing(num, viewport.width, viewport.height);
+      updatePageIndicator();
+    }
+
+    function saveCurrentPageDrawing() {
+      if (!drawCanvas.width || !pageHasDoodles.has(currentPageNum)) return;
+      pageDoodles.set(currentPageNum, drawCanvas.toDataURL('image/png'));
+    }
+
+    function restorePageDrawing(num, width, height) {
+      drawCtx.clearRect(0, 0, width, height);
+      if (pageDoodles.has(num)) {
+        const img = new Image();
+        img.onload = () => {
+          drawCtx.drawImage(img, 0, 0, width, height);
+        };
+        img.src = pageDoodles.get(num);
+      }
+    }
+
+    // 撤销快照 (在每次笔画开始前记录)
+    function pushUndoSnapshot() {
+      if (!undoStacks.has(currentPageNum)) {
+        undoStacks.set(currentPageNum, []);
+      }
+      const stack = undoStacks.get(currentPageNum);
+      if (stack.length > 30) stack.shift();
+      stack.push(drawCanvas.toDataURL('image/png'));
+    }
+
+    function undo() {
+      const stack = undoStacks.get(currentPageNum);
+      const dpr = window.devicePixelRatio || 1;
+      const w = drawCanvas.width / dpr;
+      const h = drawCanvas.height / dpr;
+
+      if (!stack || stack.length === 0) {
+        drawCtx.clearRect(0, 0, w, h);
+        pageDoodles.delete(currentPageNum);
+        pageHasDoodles.delete(currentPageNum);
+        return;
+      }
+      const prev = stack.pop();
+      const img = new Image();
+      img.onload = () => {
+        drawCtx.clearRect(0, 0, w, h);
+        drawCtx.drawImage(img, 0, 0, w, h);
+        pageDoodles.set(currentPageNum, drawCanvas.toDataURL('image/png'));
+      };
+      img.src = prev;
+    }
+
+    // 翻页
+    function prevPage() {
+      if (currentPageNum <= 1) return;
+      currentPageNum--;
+      renderPage(currentPageNum);
+    }
+    function nextPage() {
+      if (currentPageNum >= totalPages) return;
+      currentPageNum++;
+      renderPage(currentPageNum);
+    }
+    function updatePageIndicator() {
+      document.getElementById('page-indicator').textContent = `${currentPageNum} / ${totalPages}`;
+      document.getElementById('zoom-text').textContent = `${Math.round(currentScale * 100)}%`;
+    }
+
+    document.getElementById('page-jump').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const target = parseInt(e.target.value);
+        if (target >= 1 && target <= totalPages) {
+          currentPageNum = target;
+          renderPage(currentPageNum);
+          e.target.value = '';
+        }
+      }
+    });
+
+    // 指针事件 (兼容 鼠标 / 触控笔 / 手指)
+    drawCanvas.addEventListener('pointerdown', (e) => {
+      drawCanvas.setPointerCapture(e.pointerId);
+      isDrawing = true;
+      pushUndoSnapshot();
+      pageHasDoodles.add(currentPageNum);
+
+      const rect = drawCanvas.getBoundingClientRect();
+      lastX = e.clientX - rect.left;
+      lastY = e.clientY - rect.top;
+    });
+
+    drawCanvas.addEventListener('pointermove', (e) => {
+      if (!isDrawing) return;
+      const rect = drawCanvas.getBoundingClientRect();
+      const currentX = e.clientX - rect.left;
+      const currentY = e.clientY - rect.top;
+
+      drawCtx.save();
+      drawCtx.lineCap = 'round';
+      drawCtx.lineJoin = 'round';
+
+      if (currentTool === 'eraser') {
+        drawCtx.globalCompositeOperation = 'destination-out';
+        drawCtx.lineWidth = currentLineWidth * 6;
+        drawCtx.beginPath();
+        drawCtx.moveTo(lastX, lastY);
+        drawCtx.lineTo(currentX, currentY);
+        drawCtx.stroke();
+      } else if (currentTool === 'highlighter') {
+        drawCtx.globalCompositeOperation = 'source-over';
+        drawCtx.globalAlpha = 0.35;
+        drawCtx.strokeStyle = '#ffe066';
+        drawCtx.lineWidth = 14;
+        drawCtx.beginPath();
+        drawCtx.moveTo(lastX, lastY);
+        drawCtx.lineTo(currentX, currentY);
+        drawCtx.stroke();
+      } else {
+        drawCtx.globalCompositeOperation = 'source-over';
+        drawCtx.globalAlpha = 1.0;
+        drawCtx.strokeStyle = currentColor;
+        drawCtx.lineWidth = currentLineWidth;
+        drawCtx.beginPath();
+        drawCtx.moveTo(lastX, lastY);
+        drawCtx.lineTo(currentX, currentY);
+        drawCtx.stroke();
+      }
+
+      drawCtx.restore();
+      lastX = currentX;
+      lastY = currentY;
+    });
+
+    function endStroke(e) {
+      if (isDrawing) {
+        isDrawing = false;
+        try { drawCanvas.releasePointerCapture(e.pointerId); } catch(err) {}
+        saveCurrentPageDrawing();
+      }
+    }
+    drawCanvas.addEventListener('pointerup', endStroke);
+    drawCanvas.addEventListener('pointercancel', endStroke);
+
+    function clearCurrentPageDoodles() {
+      if (confirm('确认清空当前页所有笔记？')) {
+        pushUndoSnapshot();
+        const dpr = window.devicePixelRatio || 1;
+        drawCtx.clearRect(0, 0, drawCanvas.width / dpr, drawCanvas.height / dpr);
+        pageDoodles.delete(currentPageNum);
+        pageHasDoodles.delete(currentPageNum);
+      }
+    }
+
+    // 工具切换
+    function setTool(tool) {
+      currentTool = tool;
+      document.querySelectorAll('#top-bar .btn').forEach(b => {
+        if (b.id && b.id.startsWith('btn-mode-')) b.classList.remove('active');
+      });
+      document.getElementById(`btn-mode-${tool}`).classList.add('active');
+    }
+
+    function setColor(color) {
+      currentColor = color;
+      if (currentTool === 'eraser') setTool('pen');
+      document.querySelectorAll('.color-dot').forEach(d => d.classList.remove('selected'));
+      event.target.classList.add('selected');
+    }
+
+    function setLineWidth(w) {
+      currentLineWidth = w;
+      document.getElementById('btn-size-thin').classList.toggle('active', w === 1.5);
+      document.getElementById('btn-size-mid').classList.toggle('active', w === 2.5);
+      document.getElementById('btn-size-thick').classList.toggle('active', w === 5);
+    }
+
+    function zoomChange(delta) {
+      const newScale = Math.max(0.6, Math.min(2.5, currentScale + delta));
+      if (newScale !== currentScale) {
+        currentScale = newScale;
+        renderPage(currentPageNum);
+      }
+    }
+
+    // 隐蔽滤镜
+    function toggleFilter(filterName) {
+      pageWrapper.classList.remove('filter-dark-ide', 'filter-low-contrast');
+      const btnDark = document.getElementById('btn-stealth-ide');
+      const btnGhost = document.getElementById('btn-stealth-ghost');
+
+      if (currentFilter === filterName) {
+        currentFilter = '';
+        btnDark.classList.remove('active');
+        btnGhost.classList.remove('active');
+      } else {
+        currentFilter = filterName;
+        pageWrapper.classList.add(`filter-${filterName}`);
+        btnDark.classList.toggle('active', filterName === 'dark-ide');
+        btnGhost.classList.toggle('active', filterName === 'low-contrast');
+      }
+    }
+
+    // 老板键
+    function toggleBoss() {
+      bossScreen.style.display = (bossScreen.style.display === 'flex') ? 'none' : 'flex';
+    }
+
+    // 保存并合成导出 PDF
+    async function savePdf() {
+      if (!originalPdfBytes) {
+        alert('请先打开题册 PDF 文件！');
+        return;
+      }
+      saveCurrentPageDrawing();
+
+      const saveBtn = document.getElementById('btn-save');
+      const origText = saveBtn.innerHTML;
+      saveBtn.innerHTML = '⏳ 正在导出...';
+      saveBtn.disabled = true;
+
+      try {
+        const { PDFDocument, degrees } = PDFLib;
+        const pdfDocToSave = await PDFDocument.load(originalPdfBytes);
+        const pages = pdfDocToSave.getPages();
+
+        let modifiedCount = 0;
+        for (let i = 1; i <= totalPages; i++) {
+          if (pageHasDoodles.has(i) && pageDoodles.has(i)) {
+            const dataUrl = pageDoodles.get(i);
+            if (!dataUrl) continue;
+
+            const pngImage = await pdfDocToSave.embedPng(dataUrl);
+            const targetPage = pages[i - 1];
+            const { width, height } = targetPage.getSize();
+            const rot = (targetPage.getRotation() ? targetPage.getRotation().angle : 0) % 360;
+
+            if (rot === 0) {
+              targetPage.drawImage(pngImage, {
+                x: 0,
+                y: 0,
+                width: width,
+                height: height,
+              });
+            } else {
+              // 兼容旋转页面
+              targetPage.drawImage(pngImage, {
+                x: rot === 90 ? width : 0,
+                y: rot === 270 ? height : 0,
+                width: (rot === 90 || rot === 270) ? height : width,
+                height: (rot === 90 || rot === 270) ? width : height,
+                rotate: degrees(rot)
+              });
+            }
+            modifiedCount++;
+          }
+        }
+
+        const modifiedPdfBytes = await pdfDocToSave.save();
+        const blob = new Blob([modifiedPdfBytes], { type: 'application/pdf' });
+        const downloadLink = document.createElement('a');
+        downloadLink.href = URL.createObjectURL(blob);
+        const baseName = originalFileName.replace(/\.pdf$/i, '');
+        downloadLink.download = `${baseName}_做题批注.pdf`;
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+        URL.revokeObjectURL(downloadLink.href);
+
+        saveBtn.innerHTML = `✅ 已导出 (${modifiedCount}页做题记录)`;
+        setTimeout(() => {
+          saveBtn.innerHTML = origText;
+          saveBtn.disabled = false;
+        }, 2500);
+      } catch (err) {
+        alert('导出失败: ' + err.message);
+        saveBtn.innerHTML = origText;
+        saveBtn.disabled = false;
+      }
+    }
+
+    // 快捷键
+    window.addEventListener('keydown', (e) => {
+      // 老板键
+      if (e.key === 'Escape' || e.key === '`') {
+        e.preventDefault();
+        toggleBoss();
+        return;
+      }
+      if (bossScreen.style.display === 'flex') return;
+
+      if (e.target.tagName !== 'INPUT') {
+        if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A' || e.key === 'PageUp') {
+          prevPage();
+        } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D' || e.key === 'PageDown') {
+          nextPage();
+        } else if (e.key === '1') {
+          setTool('pen');
+        } else if (e.key === '2') {
+          setTool('highlighter');
+        } else if (e.key === '3') {
+          setTool('eraser');
+        } else if (e.key === 'z' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          undo();
+        } else if (e.key === 's' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          savePdf();
+        } else if (e.key === 'o' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          document.getElementById('file-input').click();
+        }
+      }
+    });
+  </script>
+</body>
+</html>

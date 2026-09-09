@@ -1,0 +1,58 @@
+{
+  "name": "stealth-pdf-viewer",
+  "displayName": "Log & Metrics Document Viewer",
+  "description": "Cluster log and metrics documentation visualizer (Stealth PDF)",
+  "version": "1.2.0",
+  "publisher": "developer",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCustomEditor:stealth-pdf.editor",
+    "onCommand:stealth-pdf.open"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "stealth-pdf.editor",
+        "displayName": "Metrics & Log Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.pdf"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "stealth-pdf.open",
+        "title": "Open Metrics & Log Document (Stealth PDF)",
+        "category": "Developer"
+      },
+      { "command": "stealth-pdf.prevPage", "title": "Stealth PDF: 上一页" },
+      { "command": "stealth-pdf.nextPage", "title": "Stealth PDF: 下一页" },
+      { "command": "stealth-pdf.jumpPage", "title": "Stealth PDF: 跳转页码" },
+      { "command": "stealth-pdf.setPen", "title": "Stealth PDF: 画笔" },
+      { "command": "stealth-pdf.setHighlighter", "title": "Stealth PDF: 荧光划线" },
+      { "command": "stealth-pdf.setEraser", "title": "Stealth PDF: 橡皮擦" },
+      { "command": "stealth-pdf.cycleColor", "title": "Stealth PDF: 切换颜色" },
+      { "command": "stealth-pdf.cycleWidth", "title": "Stealth PDF: 切换画笔粗细" },
+      { "command": "stealth-pdf.undo", "title": "Stealth PDF: 撤销" },
+      { "command": "stealth-pdf.toggleDark", "title": "Stealth PDF: 切换代码黑模式" },
+      { "command": "stealth-pdf.save", "title": "Stealth PDF: 保存做题笔记" },
+      { "command": "stealth-pdf.bossToggle", "title": "Stealth PDF: 老板键切回题册" }
+    ],
+    "keybindings": [
+      {
+        "command": "stealth-pdf.bossToggle",
+        "key": "Escape",
+        "when": "stealthPdfBossActive"
+      }
+    ]
+  }
+}
