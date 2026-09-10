@@ -812,7 +812,10 @@
 
       try {
         const { PDFDocument, degrees } = PDFLib;
-        const pdfDocToSave = await PDFDocument.load(originalPdfBytes);
+        const pdfDocToSave = await PDFDocument.load(originalPdfBytes, {
+          ignoreEncryption: true,
+          throwOnInvalidObject: false
+        });
         const pages = pdfDocToSave.getPages();
 
         if (pageHasDoodles.size === 0) {

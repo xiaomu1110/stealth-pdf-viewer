@@ -35,40 +35,54 @@ async function saveDoodlesToPdf(fileUri, doodles) {
   const pageEntries = Object.entries(doodles || {});
   if (pageEntries.length === 0) {
     vscode.window.setStatusBarMessage(`$(check) 题册已保存 (当前无涂鸦笔迹)`, 3000);
-    return;
+    return true;
   }
 
   vscode.window.setStatusBarMessage(`$(sync~spin) 正在合成涂鸦笔记至原题册...`, 15000);
 
-  const fileBytes = await vscode.workspace.fs.readFile(fileUri);
-  const pdfDoc = await PDFDocument.load(fileBytes, { ignoreEncryption: true });
-  const pages = pdfDoc.getPages();
+  try {
+    const fileBytes = await vscode.workspace.fs.readFile(fileUri);
+    const pdfDoc = await PDFDocument.load(fileBytes, {
+      ignoreEncryption: true,
+      throwOnInvalidObject: false
+    });
 
-  for (const [pageNumStr, dataUrl] of pageEntries) {
-    const pageNum = parseInt(pageNumStr);
-    if (!dataUrl || pageNum < 1 || pageNum > pages.length) continue;
-
-    const targetPage = pages[pageNum - 1];
-    const pngImage = await pdfDoc.embedPng(dataUrl);
-    const { width, height } = targetPage.getSize();
-    const rot = (targetPage.getRotation() ? targetPage.getRotation().angle : 0) % 360;
-
-    if (rot === 0) {
-      targetPage.drawImage(pngImage, { x: 0, y: 0, width, height });
-    } else {
-      targetPage.drawImage(pngImage, {
-        x: rot === 90 ? width : 0,
-        y: rot === 270 ? height : 0,
-        width: (rot === 90 || rot === 270) ? height : width,
-        height: (rot === 90 || rot === 270) ? width : height,
-        rotate: degrees(rot)
-      });
+    if (pdfDoc.isEncrypted) {
+      return false;
     }
-  }
 
-  const modifiedBytes = await pdfDoc.save();
-  await vscode.workspace.fs.writeFile(fileUri, modifiedBytes);
-  vscode.window.setStatusBarMessage(`$(check) 题册做题笔迹已成功写回原文件: ${path.basename(fileUri.fsPath)}`, 4000);
+    const pages = pdfDoc.getPages();
+
+    for (const [pageNumStr, dataUrl] of pageEntries) {
+      const pageNum = parseInt(pageNumStr);
+      if (!dataUrl || pageNum < 1 || pageNum > pages.length) continue;
+
+      const targetPage = pages[pageNum - 1];
+      const pngImage = await pdfDoc.embedPng(dataUrl);
+      const { width, height } = targetPage.getSize();
+      const rot = (targetPage.getRotation() ? targetPage.getRotation().angle : 0) % 360;
+
+      if (rot === 0) {
+        targetPage.drawImage(pngImage, { x: 0, y: 0, width, height });
+      } else {
+        targetPage.drawImage(pngImage, {
+          x: rot === 90 ? width : 0,
+          y: rot === 270 ? height : 0,
+          width: (rot === 90 || rot === 270) ? height : width,
+          height: (rot === 90 || rot === 270) ? width : height,
+          rotate: degrees(rot)
+        });
+      }
+    }
+
+    const modifiedBytes = await pdfDoc.save();
+    await vscode.workspace.fs.writeFile(fileUri, modifiedBytes);
+    vscode.window.setStatusBarMessage(`$(check) 题册做题笔迹已成功写回原文件: ${path.basename(fileUri.fsPath)}`, 4000);
+    return true;
+  } catch (err) {
+    console.warn('Direct PDF file write skipped (encrypted or protected structure):', err.message);
+    return false;
+  }
 }
 
 function activate(context) {
@@ -412,11 +426,16 @@ function setupEditorPanel(context, panel, fileUri) {
       try {
         if (message.doodles) {
           cachedDoodles = { ...cachedDoodles, ...message.doodles };
-          await saveDoodles(context, fileUri.fsPath, cachedDoodles);
         }
-        await saveDoodlesToPdf(fileUri, cachedDoodles);
+        await saveDoodles(context, fileUri.fsPath, cachedDoodles);
+
+        const embedded = await saveDoodlesToPdf(fileUri, cachedDoodles);
+        if (!embedded) {
+          vscode.window.setStatusBarMessage(`$(check) 题册做题笔迹已安全保存至本地 (重开自动恢复)`, 4000);
+        }
       } catch (err) {
-        vscode.window.showErrorMessage('保存题册失败: ' + err.message);
+        console.error('Save error:', err);
+        vscode.window.showErrorMessage('保存笔记失败: ' + err.message);
       }
     }
   });
