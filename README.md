@@ -58,7 +58,7 @@
 
 ### 方式 B：终端一键安装
 ```bash
-code --install-extension stealth-pdf-viewer-1.3.0.vsix
+code --install-extension stealth-pdf-viewer-1.3.1.vsix
 ```
 
 ---

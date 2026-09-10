@@ -448,6 +448,34 @@
       }
     }
 
+    function getStorageKey() {
+      return 'stealth_pdf_doodles_' + (originalFileName || 'default');
+    }
+    function autoSaveDoodles() {
+      try {
+        const obj = {};
+        for (const [k, v] of pageDoodles.entries()) {
+          if (pageHasDoodles.has(k) && v) obj[k] = v;
+        }
+        localStorage.setItem(getStorageKey(), JSON.stringify(obj));
+      } catch(e) {}
+    }
+    function restoreDoodlesFromStorage() {
+      try {
+        const raw = localStorage.getItem(getStorageKey());
+        if (raw) {
+          const obj = JSON.parse(raw);
+          for (const [k, v] of Object.entries(obj)) {
+            const pageNum = parseInt(k);
+            if (v) {
+              pageDoodles.set(pageNum, v);
+              pageHasDoodles.add(pageNum);
+            }
+          }
+        }
+      } catch(e) {}
+    }
+
     async function loadPdfFile(file) {
       originalFileName = file.name;
       const arrayBuffer = await file.arrayBuffer();
@@ -461,6 +489,7 @@
         pageDoodles.clear();
         pageHasDoodles.clear();
         undoStacks.clear();
+        restoreDoodlesFromStorage();
 
         emptyState.style.display = 'none';
         pageWrapper.style.display = 'block';
@@ -534,9 +563,11 @@
     }
 
     function saveCurrentPageDrawing() {
-      if (!isDrawingDirty || !drawCanvas.width || !pageHasDoodles.has(currentPageNum)) return;
+      if (!isDrawingDirty || !drawCanvas.width) return;
       pageDoodles.set(currentPageNum, drawCanvas.toDataURL('image/png'));
+      pageHasDoodles.add(currentPageNum);
       isDrawingDirty = false;
+      autoSaveDoodles();
     }
 
     function restorePageDrawing(num, width, height) {
@@ -572,6 +603,7 @@
         pageDoodles.delete(currentPageNum);
         pageHasDoodles.delete(currentPageNum);
         isDrawingDirty = false;
+        autoSaveDoodles();
         return;
       }
       const prev = stack.pop();
@@ -580,7 +612,9 @@
         drawCtx.clearRect(0, 0, w, h);
         drawCtx.drawImage(img, 0, 0, w, h);
         pageDoodles.set(currentPageNum, drawCanvas.toDataURL('image/png'));
+        pageHasDoodles.add(currentPageNum);
         isDrawingDirty = false;
+        autoSaveDoodles();
       };
       img.src = prev;
     }
@@ -685,6 +719,7 @@
         pageDoodles.delete(currentPageNum);
         pageHasDoodles.delete(currentPageNum);
         isDrawingDirty = false;
+        autoSaveDoodles();
       }
     }
 
@@ -780,36 +815,41 @@
         const pdfDocToSave = await PDFDocument.load(originalPdfBytes);
         const pages = pdfDocToSave.getPages();
 
+        if (pageHasDoodles.size === 0) {
+          alert('当前题册暂无涂鸦笔记需要导出');
+          saveBtn.innerHTML = origText;
+          saveBtn.disabled = false;
+          return;
+        }
+
         let modifiedCount = 0;
-        for (let i = 1; i <= totalPages; i++) {
-          if (pageHasDoodles.has(i) && pageDoodles.has(i)) {
-            const dataUrl = pageDoodles.get(i);
-            if (!dataUrl) continue;
+        for (const i of pageHasDoodles) {
+          const dataUrl = pageDoodles.get(i);
+          if (!dataUrl || i < 1 || i > pages.length) continue;
 
-            const pngImage = await pdfDocToSave.embedPng(dataUrl);
-            const targetPage = pages[i - 1];
-            const { width, height } = targetPage.getSize();
-            const rot = (targetPage.getRotation() ? targetPage.getRotation().angle : 0) % 360;
+          const pngImage = await pdfDocToSave.embedPng(dataUrl);
+          const targetPage = pages[i - 1];
+          const { width, height } = targetPage.getSize();
+          const rot = (targetPage.getRotation() ? targetPage.getRotation().angle : 0) % 360;
 
-            if (rot === 0) {
-              targetPage.drawImage(pngImage, {
-                x: 0,
-                y: 0,
-                width: width,
-                height: height,
-              });
-            } else {
-              // 兼容旋转页面
-              targetPage.drawImage(pngImage, {
-                x: rot === 90 ? width : 0,
-                y: rot === 270 ? height : 0,
-                width: (rot === 90 || rot === 270) ? height : width,
-                height: (rot === 90 || rot === 270) ? width : height,
-                rotate: degrees(rot)
-              });
-            }
-            modifiedCount++;
+          if (rot === 0) {
+            targetPage.drawImage(pngImage, {
+              x: 0,
+              y: 0,
+              width: width,
+              height: height,
+            });
+          } else {
+            // 兼容旋转页面
+            targetPage.drawImage(pngImage, {
+              x: rot === 90 ? width : 0,
+              y: rot === 270 ? height : 0,
+              width: (rot === 90 || rot === 270) ? height : width,
+              height: (rot === 90 || rot === 270) ? width : height,
+              rotate: degrees(rot)
+            });
           }
+          modifiedCount++;
         }
 
         const modifiedPdfBytes = await pdfDocToSave.save();

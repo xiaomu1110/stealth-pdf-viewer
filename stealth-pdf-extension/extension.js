@@ -1,11 +1,75 @@
 const vscode = require('vscode');
 const path = require('path');
+const { PDFDocument, degrees } = require('./lib/pdf-lib.min.js');
 
 let activePanel = null;
 let activeFileUri = null;
 let lastPdfUri = null;
 let isBossActive = false;
 const statusItems = {};
+
+async function getDoodles(context, filePath) {
+  try {
+    const hash = Buffer.from(filePath).toString('hex');
+    const doodleUri = vscode.Uri.joinPath(context.globalStorageUri, `${hash}.json`);
+    const bytes = await vscode.workspace.fs.readFile(doodleUri);
+    return JSON.parse(Buffer.from(bytes).toString('utf8'));
+  } catch (e) {
+    return {};
+  }
+}
+
+async function saveDoodles(context, filePath, doodles) {
+  try {
+    await vscode.workspace.fs.createDirectory(context.globalStorageUri);
+    const hash = Buffer.from(filePath).toString('hex');
+    const doodleUri = vscode.Uri.joinPath(context.globalStorageUri, `${hash}.json`);
+    const content = Buffer.from(JSON.stringify(doodles), 'utf8');
+    await vscode.workspace.fs.writeFile(doodleUri, content);
+  } catch (e) {
+    console.error('Failed to save doodles:', e);
+  }
+}
+
+async function saveDoodlesToPdf(fileUri, doodles) {
+  const pageEntries = Object.entries(doodles || {});
+  if (pageEntries.length === 0) {
+    vscode.window.setStatusBarMessage(`$(check) 题册已保存 (当前无涂鸦笔迹)`, 3000);
+    return;
+  }
+
+  vscode.window.setStatusBarMessage(`$(sync~spin) 正在合成涂鸦笔记至原题册...`, 15000);
+
+  const fileBytes = await vscode.workspace.fs.readFile(fileUri);
+  const pdfDoc = await PDFDocument.load(fileBytes, { ignoreEncryption: true });
+  const pages = pdfDoc.getPages();
+
+  for (const [pageNumStr, dataUrl] of pageEntries) {
+    const pageNum = parseInt(pageNumStr);
+    if (!dataUrl || pageNum < 1 || pageNum > pages.length) continue;
+
+    const targetPage = pages[pageNum - 1];
+    const pngImage = await pdfDoc.embedPng(dataUrl);
+    const { width, height } = targetPage.getSize();
+    const rot = (targetPage.getRotation() ? targetPage.getRotation().angle : 0) % 360;
+
+    if (rot === 0) {
+      targetPage.drawImage(pngImage, { x: 0, y: 0, width, height });
+    } else {
+      targetPage.drawImage(pngImage, {
+        x: rot === 90 ? width : 0,
+        y: rot === 270 ? height : 0,
+        width: (rot === 90 || rot === 270) ? height : width,
+        height: (rot === 90 || rot === 270) ? width : height,
+        rotate: degrees(rot)
+      });
+    }
+  }
+
+  const modifiedBytes = await pdfDoc.save();
+  await vscode.workspace.fs.writeFile(fileUri, modifiedBytes);
+  vscode.window.setStatusBarMessage(`$(check) 题册做题笔迹已成功写回原文件: ${path.basename(fileUri.fsPath)}`, 4000);
+}
 
 function activate(context) {
   initStatusBar(context);
@@ -241,10 +305,12 @@ function setupEditorPanel(context, panel, fileUri) {
   const stateKey = 'pdf_state:' + fileUri.fsPath;
   const savedState = context.globalState.get(stateKey) || {};
 
+  let cachedDoodles = {};
   let pendingPdfData = null;
 
   async function loadFile() {
     try {
+      cachedDoodles = await getDoodles(context, fileUri.fsPath);
       const fileBytes = await vscode.workspace.fs.readFile(fileUri);
       const base64Data = Buffer.from(fileBytes).toString('base64');
       const fileName = path.basename(fileUri.fsPath);
@@ -259,7 +325,8 @@ function setupEditorPanel(context, panel, fileUri) {
         initialColor: savedState.color || '#e06c75',
         initialWidth: savedState.width !== undefined ? savedState.width : 2,
         initialFilter: savedState.filter !== undefined ? savedState.filter : 'dark-ide',
-        initialScale: savedState.scale || 1.25
+        initialScale: savedState.scale || 1.25,
+        initialDoodles: cachedDoodles
       };
       panel.webview.postMessage(pendingPdfData);
     } catch (err) {
@@ -268,8 +335,8 @@ function setupEditorPanel(context, panel, fileUri) {
   }
   loadFile();
 
-  // 激活状态维护
-  if (panel.active) {
+  // 激活状态维护 (使用 visible 避免点击状态栏按钮时 activePanel 丢失)
+  if (panel.visible) {
     activePanel = panel;
     activeFileUri = fileUri;
     isBossActive = false;
@@ -278,7 +345,7 @@ function setupEditorPanel(context, panel, fileUri) {
   }
 
   panel.onDidChangeViewState(e => {
-    if (e.webviewPanel.active) {
+    if (e.webviewPanel.visible) {
       activePanel = panel;
       activeFileUri = fileUri;
       isBossActive = false;
@@ -334,11 +401,20 @@ function setupEditorPanel(context, panel, fileUri) {
       statusItems.color.text = `$(symbol-color) ${colorNames[message.color] || '色'}`;
       statusItems.width.text = `$(dash) ${message.width}px`;
       statusItems.dark.text = message.filter === 'dark-ide' ? '$(eye-closed) 代码黑' : '$(eye) 原色';
+    } else if (message.type === 'autoSaveDoodle') {
+      if (message.doodle) {
+        cachedDoodles[message.page] = message.doodle;
+      } else {
+        delete cachedDoodles[message.page];
+      }
+      await saveDoodles(context, fileUri.fsPath, cachedDoodles);
     } else if (message.type === 'savePdf') {
       try {
-        const buffer = Buffer.from(message.data, 'base64');
-        await vscode.workspace.fs.writeFile(vscode.Uri.file(fileUri.fsPath), buffer);
-        vscode.window.setStatusBarMessage(`$(check) 题册已保存: ${path.basename(fileUri.fsPath)}`, 3000);
+        if (message.doodles) {
+          cachedDoodles = { ...cachedDoodles, ...message.doodles };
+          await saveDoodles(context, fileUri.fsPath, cachedDoodles);
+        }
+        await saveDoodlesToPdf(fileUri, cachedDoodles);
       } catch (err) {
         vscode.window.showErrorMessage('保存题册失败: ' + err.message);
       }
@@ -517,6 +593,15 @@ function getWebviewContent(webview, uris) {
           pageDoodles.clear();
           pageHasDoodles.clear();
           undoStacks.clear();
+          if (msg.initialDoodles) {
+            for (const [p, d] of Object.entries(msg.initialDoodles)) {
+              const pageNum = parseInt(p);
+              if (d) {
+                pageDoodles.set(pageNum, d);
+                pageHasDoodles.add(pageNum);
+              }
+            }
+          }
           notifyState();
           await renderPage(currentPageNum);
         } catch (err) {
@@ -641,9 +726,17 @@ function getWebviewContent(webview, uris) {
     }
 
     function saveCurrentPageDrawing() {
-      if (!isDrawingDirty || !drawCanvas.width || !pageHasDoodles.has(currentPageNum)) return;
-      pageDoodles.set(currentPageNum, drawCanvas.toDataURL('image/png'));
+      if (!isDrawingDirty || !drawCanvas.width) return;
+      const dataUrl = drawCanvas.toDataURL('image/png');
+      pageDoodles.set(currentPageNum, dataUrl);
+      pageHasDoodles.add(currentPageNum);
       isDrawingDirty = false;
+
+      vscode.postMessage({
+        type: 'autoSaveDoodle',
+        page: currentPageNum,
+        doodle: dataUrl
+      });
     }
 
     function restorePageDrawing(num, width, height) {
@@ -676,6 +769,11 @@ function getWebviewContent(webview, uris) {
         pageDoodles.delete(currentPageNum);
         pageHasDoodles.delete(currentPageNum);
         isDrawingDirty = false;
+        vscode.postMessage({
+          type: 'autoSaveDoodle',
+          page: currentPageNum,
+          doodle: null
+        });
         return;
       }
       const prev = stack.pop();
@@ -683,8 +781,15 @@ function getWebviewContent(webview, uris) {
       img.onload = () => {
         drawCtx.clearRect(0, 0, w, h);
         drawCtx.drawImage(img, 0, 0, w, h);
-        pageDoodles.set(currentPageNum, drawCanvas.toDataURL('image/png'));
+        const dataUrl = drawCanvas.toDataURL('image/png');
+        pageDoodles.set(currentPageNum, dataUrl);
+        pageHasDoodles.add(currentPageNum);
         isDrawingDirty = false;
+        vscode.postMessage({
+          type: 'autoSaveDoodle',
+          page: currentPageNum,
+          doodle: dataUrl
+        });
       };
       img.src = prev;
     }
@@ -763,52 +868,18 @@ function getWebviewContent(webview, uris) {
     drawCanvas.addEventListener('pointerup', endStroke);
     drawCanvas.addEventListener('pointercancel', endStroke);
 
-    async function triggerSave() {
-      if (!originalPdfBytes) return;
+    function triggerSave() {
       saveCurrentPageDrawing();
-
-      try {
-        const { PDFDocument, degrees } = PDFLib;
-        const pdfDocToSave = await PDFDocument.load(originalPdfBytes);
-        const pages = pdfDocToSave.getPages();
-
-        for (let i = 1; i <= totalPages; i++) {
-          if (pageHasDoodles.has(i) && pageDoodles.has(i)) {
-            const dataUrl = pageDoodles.get(i);
-            if (!dataUrl) continue;
-            const pngImage = await pdfDocToSave.embedPng(dataUrl);
-            const targetPage = pages[i - 1];
-            const { width, height } = targetPage.getSize();
-            const rot = (targetPage.getRotation() ? targetPage.getRotation().angle : 0) % 360;
-
-            if (rot === 0) {
-              targetPage.drawImage(pngImage, { x: 0, y: 0, width, height });
-            } else {
-              targetPage.drawImage(pngImage, {
-                x: rot === 90 ? width : 0,
-                y: rot === 270 ? height : 0,
-                width: (rot === 90 || rot === 270) ? height : width,
-                height: (rot === 90 || rot === 270) ? width : height,
-                rotate: degrees(rot)
-              });
-            }
-          }
+      const doodlesObj = {};
+      for (const [p, d] of pageDoodles.entries()) {
+        if (pageHasDoodles.has(p) && d) {
+          doodlesObj[p] = d;
         }
-
-        const modifiedPdfBytes = await pdfDocToSave.save();
-        const blob = new Blob([modifiedPdfBytes], { type: 'application/pdf' });
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64Str = reader.result.split(',')[1];
-          vscode.postMessage({
-            type: 'savePdf',
-            data: base64Str
-          });
-        };
-        reader.readAsDataURL(blob);
-      } catch (err) {
-        alert('保存错误: ' + err.message);
       }
+      vscode.postMessage({
+        type: 'savePdf',
+        doodles: doodlesObj
+      });
     }
 
     // 快捷键支持
