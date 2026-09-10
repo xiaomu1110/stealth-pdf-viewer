@@ -258,7 +258,8 @@ function setupEditorPanel(context, panel, fileUri) {
         initialTool: savedState.tool || 'pen',
         initialColor: savedState.color || '#e06c75',
         initialWidth: savedState.width !== undefined ? savedState.width : 2,
-        initialFilter: savedState.filter !== undefined ? savedState.filter : 'dark-ide'
+        initialFilter: savedState.filter !== undefined ? savedState.filter : 'dark-ide',
+        initialScale: savedState.scale || 1.25
       };
       panel.webview.postMessage(pendingPdfData);
     } catch (err) {
@@ -313,7 +314,8 @@ function setupEditorPanel(context, panel, fileUri) {
         tool: message.tool,
         color: message.color,
         width: message.width,
-        filter: message.filter
+        filter: message.filter,
+        scale: message.scale
       });
 
       // 实时同步底部状态栏
@@ -376,7 +378,6 @@ function getWebviewContent(webview, uris) {
       position: relative;
       overflow: auto;
       display: flex;
-      justify-content: center;
       align-items: flex-start;
       padding: 12px;
       background: var(--vscode-editor-background, #1e1e1e);
@@ -387,6 +388,7 @@ function getWebviewContent(webview, uris) {
       box-shadow: 0 4px 18px rgba(0,0,0,0.5);
       border-radius: 2px;
       transform-origin: top center;
+      margin: 0 auto;
     }
     #pdf-canvas, #draw-canvas {
       position: absolute;
@@ -440,8 +442,13 @@ function getWebviewContent(webview, uris) {
     let currentLineWidth = 2;
 
     let isDrawing = false;
+    let isDrawingDirty = false;
     let lastX = 0;
     let lastY = 0;
+
+    let currentRenderTask = null;
+    let isRendering = false;
+    let pendingRender = false;
 
     const pageDoodles = new Map();
     const pageHasDoodles = new Set();
@@ -461,7 +468,8 @@ function getWebviewContent(webview, uris) {
         tool: currentTool,
         color: currentColor,
         width: currentLineWidth,
-        filter: currentFilter
+        filter: currentFilter,
+        scale: currentScale
       });
     }
 
@@ -489,6 +497,7 @@ function getWebviewContent(webview, uris) {
           currentPageNum = (msg.initialPage && msg.initialPage >= 1 && msg.initialPage <= totalPages) 
             ? msg.initialPage 
             : 1;
+          if (msg.initialScale) currentScale = msg.initialScale;
           if (msg.initialTool) currentTool = msg.initialTool;
           if (msg.initialColor) {
             currentColor = msg.initialColor;
@@ -554,44 +563,97 @@ function getWebviewContent(webview, uris) {
       }
     }
 
+    function zoomChange(delta, mousePos) {
+      if (!pdfDoc) return;
+      const oldScale = currentScale;
+      const newScale = Math.max(0.5, Math.min(3.0, parseFloat((currentScale + delta).toFixed(2))));
+      if (newScale === oldScale) return;
+      currentScale = newScale;
+
+      const vp = document.getElementById('main-viewport');
+      if (mousePos && vp) {
+        const rect = vp.getBoundingClientRect();
+        const mouseX = mousePos.clientX - rect.left;
+        const mouseY = mousePos.clientY - rect.top;
+        const prevScrollLeft = vp.scrollLeft;
+        const prevScrollTop = vp.scrollTop;
+        const ratio = newScale / oldScale;
+
+        renderPage(currentPageNum).then(() => {
+          vp.scrollLeft = (prevScrollLeft + mouseX) * ratio - mouseX;
+          vp.scrollTop = (prevScrollTop + mouseY) * ratio - mouseY;
+        });
+      } else {
+        renderPage(currentPageNum);
+      }
+    }
+
     async function renderPage(num) {
       if (!pdfDoc) return;
+      if (isRendering) {
+        pendingRender = true;
+        if (currentRenderTask) {
+          try { currentRenderTask.cancel(); } catch (e) {}
+        }
+        return;
+      }
+      isRendering = true;
       saveCurrentPageDrawing();
 
-      const page = await pdfDoc.getPage(num);
-      const viewport = page.getViewport({ scale: currentScale });
-      const dpr = window.devicePixelRatio || 1;
+      try {
+        const page = await pdfDoc.getPage(num);
+        const viewport = page.getViewport({ scale: currentScale });
+        const dpr = window.devicePixelRatio || 1;
 
-      pageWrapper.style.width = viewport.width + 'px';
-      pageWrapper.style.height = viewport.height + 'px';
+        pageWrapper.style.width = viewport.width + 'px';
+        pageWrapper.style.height = viewport.height + 'px';
 
-      pdfCanvas.width = viewport.width * dpr;
-      pdfCanvas.height = viewport.height * dpr;
-      pdfCanvas.style.width = viewport.width + 'px';
-      pdfCanvas.style.height = viewport.height + 'px';
-      pdfCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        pdfCanvas.width = viewport.width * dpr;
+        pdfCanvas.height = viewport.height * dpr;
+        pdfCanvas.style.width = viewport.width + 'px';
+        pdfCanvas.style.height = viewport.height + 'px';
+        pdfCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      drawCanvas.width = viewport.width * dpr;
-      drawCanvas.height = viewport.height * dpr;
-      drawCanvas.style.width = viewport.width + 'px';
-      drawCanvas.style.height = viewport.height + 'px';
-      drawCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        drawCanvas.width = viewport.width * dpr;
+        drawCanvas.height = viewport.height * dpr;
+        drawCanvas.style.width = viewport.width + 'px';
+        drawCanvas.style.height = viewport.height + 'px';
+        drawCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      await page.render({ canvasContext: pdfCtx, viewport: viewport }).promise;
-      restorePageDrawing(num, viewport.width, viewport.height);
-      notifyState();
+        currentRenderTask = page.render({ canvasContext: pdfCtx, viewport: viewport });
+        await currentRenderTask.promise;
+        restorePageDrawing(num, viewport.width, viewport.height);
+        notifyState();
+      } catch (err) {
+        if (err && (err.name === 'RenderingCancelledException' || err.message === 'Rendering cancelled')) {
+          // 渲染取消正常忽略
+        } else {
+          console.error('Render error:', err);
+        }
+      } finally {
+        isRendering = false;
+        currentRenderTask = null;
+        if (pendingRender) {
+          pendingRender = false;
+          renderPage(currentPageNum);
+        }
+      }
     }
 
     function saveCurrentPageDrawing() {
-      if (!drawCanvas.width || !pageHasDoodles.has(currentPageNum)) return;
+      if (!isDrawingDirty || !drawCanvas.width || !pageHasDoodles.has(currentPageNum)) return;
       pageDoodles.set(currentPageNum, drawCanvas.toDataURL('image/png'));
+      isDrawingDirty = false;
     }
 
     function restorePageDrawing(num, width, height) {
       drawCtx.clearRect(0, 0, width, height);
       if (pageDoodles.has(num)) {
         const img = new Image();
-        img.onload = () => { drawCtx.drawImage(img, 0, 0, width, height); };
+        img.onload = () => {
+          drawCtx.drawImage(img, 0, 0, width, height);
+          isDrawingDirty = false;
+        };
         img.src = pageDoodles.get(num);
       }
     }
@@ -613,6 +675,7 @@ function getWebviewContent(webview, uris) {
         drawCtx.clearRect(0, 0, w, h);
         pageDoodles.delete(currentPageNum);
         pageHasDoodles.delete(currentPageNum);
+        isDrawingDirty = false;
         return;
       }
       const prev = stack.pop();
@@ -621,6 +684,7 @@ function getWebviewContent(webview, uris) {
         drawCtx.clearRect(0, 0, w, h);
         drawCtx.drawImage(img, 0, 0, w, h);
         pageDoodles.set(currentPageNum, drawCanvas.toDataURL('image/png'));
+        isDrawingDirty = false;
       };
       img.src = prev;
     }
@@ -639,6 +703,7 @@ function getWebviewContent(webview, uris) {
     drawCanvas.addEventListener('pointerdown', (e) => {
       drawCanvas.setPointerCapture(e.pointerId);
       isDrawing = true;
+      isDrawingDirty = true;
       pushUndoSnapshot();
       pageHasDoodles.add(currentPageNum);
 
@@ -786,6 +851,16 @@ function getWebviewContent(webview, uris) {
         }
       }
     });
+
+    // Ctrl + 滚轮缩放支持
+    window.addEventListener('wheel', (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        if (!pdfDoc) return;
+        const delta = e.deltaY < 0 ? 0.1 : -0.1;
+        zoomChange(delta, { clientX: e.clientX, clientY: e.clientY });
+      }
+    }, { passive: false });
 
     vscode.postMessage({ type: 'ready' });
   </script>

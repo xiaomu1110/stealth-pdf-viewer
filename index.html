@@ -111,7 +111,6 @@
       position: relative;
       overflow: auto;
       display: flex;
-      justify-content: center;
       align-items: flex-start;
       padding: 16px;
       background-color: var(--bg-color);
@@ -122,6 +121,7 @@
       box-shadow: 0 4px 20px rgba(0,0,0,0.6);
       border-radius: 2px;
       transform-origin: top center;
+      margin: 0 auto;
     }
 
     /* PDF与涂鸦层严格对齐 */
@@ -315,7 +315,7 @@
       <div style="font-weight: 600; font-size: 15px; color: #e1e4e8;">点击或拖拽考公 PDF 题册至此</div>
       <p style="margin-top: 8px; color: #858585; font-size: 12px;">纯浏览器本地解析与涂鸦，不经网络传输，安全隐蔽</p>
       <p style="margin-top: 14px; font-size: 11px; color: #6e7681;">
-        常用快捷键：<b>Esc</b> 紧急老板键 | <b>A/D</b> 翻页 | <b>Ctrl+Z</b> 撤销 | <b>Ctrl+S</b> 保存
+        常用快捷键：<b>Esc</b> 紧急老板键 | <b>Ctrl+滚轮</b> 放大缩小 | <b>A/D</b> 翻页 | <b>Ctrl+Z</b> 撤销 | <b>Ctrl+S</b> 保存
       </p>
     </div>
 
@@ -399,8 +399,13 @@
     let currentColor = '#e06c75';
     let currentLineWidth = 2.5;
     let isDrawing = false;
+    let isDrawingDirty = false;
     let lastX = 0;
     let lastY = 0;
+
+    let currentRenderTask = null;
+    let isRendering = false;
+    let pendingRender = false;
 
     // 页面涂鸦记录与撤销栈
     const pageDoodles = new Map(); // pageNum -> dataURL
@@ -469,44 +474,69 @@
     // 渲染页面
     async function renderPage(num) {
       if (!pdfDoc) return;
+      if (isRendering) {
+        pendingRender = true;
+        if (currentRenderTask) {
+          try { currentRenderTask.cancel(); } catch (e) {}
+        }
+        return;
+      }
+      isRendering = true;
       saveCurrentPageDrawing(); // 切换前保留画布快照
 
-      const page = await pdfDoc.getPage(num);
-      const viewport = page.getViewport({ scale: currentScale });
-      const dpr = window.devicePixelRatio || 1;
+      try {
+        const page = await pdfDoc.getPage(num);
+        const viewport = page.getViewport({ scale: currentScale });
+        const dpr = window.devicePixelRatio || 1;
 
-      // 视口容器
-      pageWrapper.style.width = `${viewport.width}px`;
-      pageWrapper.style.height = `${viewport.height}px`;
+        // 视口容器
+        pageWrapper.style.width = `${viewport.width}px`;
+        pageWrapper.style.height = `${viewport.height}px`;
 
-      // 底层 PDF 画布
-      pdfCanvas.width = viewport.width * dpr;
-      pdfCanvas.height = viewport.height * dpr;
-      pdfCanvas.style.width = `${viewport.width}px`;
-      pdfCanvas.style.height = `${viewport.height}px`;
-      pdfCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        // 底层 PDF 画布
+        pdfCanvas.width = viewport.width * dpr;
+        pdfCanvas.height = viewport.height * dpr;
+        pdfCanvas.style.width = `${viewport.width}px`;
+        pdfCanvas.style.height = `${viewport.height}px`;
+        pdfCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      // 上层涂鸦画布
-      drawCanvas.width = viewport.width * dpr;
-      drawCanvas.height = viewport.height * dpr;
-      drawCanvas.style.width = `${viewport.width}px`;
-      drawCanvas.style.height = `${viewport.height}px`;
-      drawCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        // 上层涂鸦画布
+        drawCanvas.width = viewport.width * dpr;
+        drawCanvas.height = viewport.height * dpr;
+        drawCanvas.style.width = `${viewport.width}px`;
+        drawCanvas.style.height = `${viewport.height}px`;
+        drawCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      // 渲染 PDF
-      await page.render({
-        canvasContext: pdfCtx,
-        viewport: viewport
-      }).promise;
+        // 渲染 PDF
+        currentRenderTask = page.render({
+          canvasContext: pdfCtx,
+          viewport: viewport
+        });
+        await currentRenderTask.promise;
 
-      // 恢复该页历史笔迹
-      restorePageDrawing(num, viewport.width, viewport.height);
-      updatePageIndicator();
+        // 恢复该页历史笔迹
+        restorePageDrawing(num, viewport.width, viewport.height);
+        updatePageIndicator();
+      } catch (err) {
+        if (err && (err.name === 'RenderingCancelledException' || err.message === 'Rendering cancelled')) {
+          // 渲染取消正常忽略
+        } else {
+          console.error('Render error:', err);
+        }
+      } finally {
+        isRendering = false;
+        currentRenderTask = null;
+        if (pendingRender) {
+          pendingRender = false;
+          renderPage(currentPageNum);
+        }
+      }
     }
 
     function saveCurrentPageDrawing() {
-      if (!drawCanvas.width || !pageHasDoodles.has(currentPageNum)) return;
+      if (!isDrawingDirty || !drawCanvas.width || !pageHasDoodles.has(currentPageNum)) return;
       pageDoodles.set(currentPageNum, drawCanvas.toDataURL('image/png'));
+      isDrawingDirty = false;
     }
 
     function restorePageDrawing(num, width, height) {
@@ -515,6 +545,7 @@
         const img = new Image();
         img.onload = () => {
           drawCtx.drawImage(img, 0, 0, width, height);
+          isDrawingDirty = false;
         };
         img.src = pageDoodles.get(num);
       }
@@ -540,6 +571,7 @@
         drawCtx.clearRect(0, 0, w, h);
         pageDoodles.delete(currentPageNum);
         pageHasDoodles.delete(currentPageNum);
+        isDrawingDirty = false;
         return;
       }
       const prev = stack.pop();
@@ -548,6 +580,7 @@
         drawCtx.clearRect(0, 0, w, h);
         drawCtx.drawImage(img, 0, 0, w, h);
         pageDoodles.set(currentPageNum, drawCanvas.toDataURL('image/png'));
+        isDrawingDirty = false;
       };
       img.src = prev;
     }
@@ -583,6 +616,7 @@
     drawCanvas.addEventListener('pointerdown', (e) => {
       drawCanvas.setPointerCapture(e.pointerId);
       isDrawing = true;
+      isDrawingDirty = true;
       pushUndoSnapshot();
       pageHasDoodles.add(currentPageNum);
 
@@ -650,6 +684,7 @@
         drawCtx.clearRect(0, 0, drawCanvas.width / dpr, drawCanvas.height / dpr);
         pageDoodles.delete(currentPageNum);
         pageHasDoodles.delete(currentPageNum);
+        isDrawingDirty = false;
       }
     }
 
@@ -676,10 +711,30 @@
       document.getElementById('btn-size-thick').classList.toggle('active', w === 5);
     }
 
-    function zoomChange(delta) {
-      const newScale = Math.max(0.6, Math.min(2.5, currentScale + delta));
-      if (newScale !== currentScale) {
-        currentScale = newScale;
+    function zoomChange(delta, mousePos) {
+      if (!pdfDoc) return;
+      const oldScale = currentScale;
+      const newScale = Math.max(0.5, Math.min(3.0, parseFloat((currentScale + delta).toFixed(2))));
+      if (newScale === oldScale) return;
+      currentScale = newScale;
+
+      const zoomText = document.getElementById('zoom-text');
+      if (zoomText) zoomText.textContent = `${Math.round(currentScale * 100)}%`;
+
+      const vp = document.getElementById('main-viewport');
+      if (mousePos && vp) {
+        const rect = vp.getBoundingClientRect();
+        const mouseX = mousePos.clientX - rect.left;
+        const mouseY = mousePos.clientY - rect.top;
+        const prevScrollLeft = vp.scrollLeft;
+        const prevScrollTop = vp.scrollTop;
+        const ratio = newScale / oldScale;
+
+        renderPage(currentPageNum).then(() => {
+          vp.scrollLeft = (prevScrollLeft + mouseX) * ratio - mouseX;
+          vp.scrollTop = (prevScrollTop + mouseY) * ratio - mouseY;
+        });
+      } else {
         renderPage(currentPageNum);
       }
     }
@@ -779,6 +834,16 @@
         saveBtn.disabled = false;
       }
     }
+
+    // Ctrl + 滚轮缩放支持
+    window.addEventListener('wheel', (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        if (!pdfDoc || (bossScreen && bossScreen.style.display === 'flex')) return;
+        const delta = e.deltaY < 0 ? 0.1 : -0.1;
+        zoomChange(delta, { clientX: e.clientX, clientY: e.clientY });
+      }
+    }, { passive: false });
 
     // 快捷键
     window.addEventListener('keydown', (e) => {
