@@ -138,7 +138,7 @@ async function giteeRequest(method, pathname, payload) {
       res.on('end', () => {
         let parsed = null;
         try { parsed = JSON.parse(data); } catch (e) {}
-        resolve({ status: res.statusCode, body: parsed });
+        resolve({ status: res.statusCode, body: parsed, raw: data });
       });
     });
     req.on('timeout', () => {
@@ -155,29 +155,46 @@ async function giteeRequest(method, pathname, payload) {
 }
 
 function giteeErrMsg(res, fallback) {
-  return (res.body && (res.body.message || res.body.errorMessage)) || fallback + ` (HTTP ${res.status})`;
+  if (!res) return fallback;
+  if (res.body) {
+    if (typeof res.body === 'string') return res.body;
+    if (res.body.message) return res.body.message;
+    if (res.body.errorMessage) return res.body.errorMessage;
+    if (res.body.error_description) return res.body.error_description;
+  }
+  if (res.raw && typeof res.raw === 'string' && res.raw.trim().length > 0) {
+    return res.raw.trim().slice(0, 150);
+  }
+  return fallback + ` (HTTP ${res.status})`;
 }
 
 async function uploadToGitee(config, cloudPath, contentBuffer, message) {
   const encPath = encodeURIComponent(cloudPath);
-  const query = `?access_token=${encodeURIComponent(config.token)}&ref=${encodeURIComponent(config.branch)}`;
+  const branchParam = config.branch ? `&ref=${encodeURIComponent(config.branch)}` : '';
+  const query = `?access_token=${encodeURIComponent(config.token)}${branchParam}`;
 
   const head = await giteeRequest('GET', `/repos/${config.repo}/contents/${encPath}${query}`);
   if (head.status !== 200 && head.status !== 404) {
     throw new Error(giteeErrMsg(head, '检查云端文件失败'));
   }
 
+  // Gitee API 规定：文件不存在时必须用 POST（新建），文件已存在时必须用 PUT（更新，且需带上 sha）
+  const isUpdate = (head.status === 200 && head.body && head.body.sha);
+  const method = isUpdate ? 'PUT' : 'POST';
+
   const payload = {
     access_token: config.token,
     content: contentBuffer.toString('base64'),
-    branch: config.branch,
     message
   };
-  if (head.status === 200 && head.body && head.body.sha) {
-    payload.sha = head.body.sha; // 已存在则更新
+  if (config.branch) {
+    payload.branch = config.branch;
+  }
+  if (isUpdate) {
+    payload.sha = head.body.sha;
   }
 
-  const res = await giteeRequest('PUT', `/repos/${config.repo}/contents/${encPath}`, payload);
+  const res = await giteeRequest(method, `/repos/${config.repo}/contents/${encPath}`, payload);
   if (res.status !== 200 && res.status !== 201) {
     throw new Error(giteeErrMsg(res, '上传到 Gitee 失败'));
   }
@@ -185,7 +202,8 @@ async function uploadToGitee(config, cloudPath, contentBuffer, message) {
 
 async function downloadFromGitee(config, cloudPath) {
   const encPath = encodeURIComponent(cloudPath);
-  const query = `?access_token=${encodeURIComponent(config.token)}&ref=${encodeURIComponent(config.branch)}`;
+  const branchParam = config.branch ? `&ref=${encodeURIComponent(config.branch)}` : '';
+  const query = `?access_token=${encodeURIComponent(config.token)}${branchParam}`;
   const res = await giteeRequest('GET', `/repos/${config.repo}/contents/${encPath}${query}`);
   if (res.status === 404) return null;
   if (res.status !== 200 || !res.body || !res.body.content) {
