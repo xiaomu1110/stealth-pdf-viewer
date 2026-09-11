@@ -372,7 +372,7 @@ function initStatusBar(context) {
   statusItems.next.tooltip = '下一页 (D / →)';
   statusItems.next.command = 'stealth-pdf.nextPage';
 
-  // 工具：笔 / 荧光 / 橡皮
+  // 工具：笔 / 荧光 / 橡皮 / 文字
   statusItems.pen = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase + 7);
   statusItems.pen.text = '$(edit) 笔';
   statusItems.pen.tooltip = '画笔 (快捷键 1)';
@@ -388,31 +388,36 @@ function initStatusBar(context) {
   statusItems.eraser.tooltip = '橡皮擦 (快捷键 3)';
   statusItems.eraser.command = 'stealth-pdf.setEraser';
 
+  statusItems.text = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase + 4);
+  statusItems.text.text = '$(symbol-string) 文';
+  statusItems.text.tooltip = '打字输入笔记 (快捷键 4)：点击页面输入文字';
+  statusItems.text.command = 'stealth-pdf.setText';
+
   // 颜色与粗细 (粗细支持最小 1px)
-  statusItems.color = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase + 4);
+  statusItems.color = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase + 3);
   statusItems.color.text = '$(symbol-color) 红';
   statusItems.color.tooltip = '切换颜色 (红/蓝/绿/灰/黄)';
   statusItems.color.command = 'stealth-pdf.cycleColor';
 
-  statusItems.width = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase + 3);
+  statusItems.width = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase + 2);
   statusItems.width.text = '$(dash) 2px';
   statusItems.width.tooltip = '画笔粗细 (点击切换: 1px/2px/3px/5px，支持按 [ 或 ] 微调)';
   statusItems.width.command = 'stealth-pdf.cycleWidth';
 
   // 撤销
-  statusItems.undo = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase + 2);
+  statusItems.undo = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase + 1);
   statusItems.undo.text = '$(discard)';
   statusItems.undo.tooltip = '撤销笔迹 (Ctrl+Z)';
   statusItems.undo.command = 'stealth-pdf.undo';
 
   // 代码黑滤镜
-  statusItems.dark = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase + 1);
+  statusItems.dark = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase);
   statusItems.dark.text = '$(eye-closed) 代码黑';
   statusItems.dark.tooltip = '切换代码黑深色滤镜';
   statusItems.dark.command = 'stealth-pdf.toggleDark';
 
   // 实时保存
-  statusItems.save = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase);
+  statusItems.save = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase - 1);
   statusItems.save.text = '$(save) 存';
   statusItems.save.tooltip = '保存题册笔迹 (Ctrl+S)';
   statusItems.save.command = 'stealth-pdf.save';
@@ -451,6 +456,7 @@ function registerControlCommands(context) {
     vscode.commands.registerCommand('stealth-pdf.setPen', () => send('setTool', { tool: 'pen' })),
     vscode.commands.registerCommand('stealth-pdf.setHighlighter', () => send('setTool', { tool: 'highlighter' })),
     vscode.commands.registerCommand('stealth-pdf.setEraser', () => send('setTool', { tool: 'eraser' })),
+    vscode.commands.registerCommand('stealth-pdf.setText', () => send('setTool', { tool: 'text' })),
     vscode.commands.registerCommand('stealth-pdf.undo', () => send('undo')),
     vscode.commands.registerCommand('stealth-pdf.cycleColor', () => send('cycleColor')),
     vscode.commands.registerCommand('stealth-pdf.cycleWidth', () => send('cycleWidth')),
@@ -638,6 +644,7 @@ function setupEditorPanel(context, panel, fileUri) {
       statusItems.pen.text = message.tool === 'pen' ? '$(edit) [笔]' : '$(edit) 笔';
       statusItems.highlighter.text = message.tool === 'highlighter' ? '$(sparkle) [荧光]' : '$(sparkle) 荧光';
       statusItems.eraser.text = message.tool === 'eraser' ? '$(trash) [擦]' : '$(trash) 擦';
+      statusItems.text.text = message.tool === 'text' ? '$(symbol-string) [文]' : '$(symbol-string) 文';
 
       const colorNames = {
         '#e06c75': '红',
@@ -731,6 +738,21 @@ function getWebviewContent(webview, uris) {
       touch-action: none;
     }
 
+    #text-input {
+      position: absolute;
+      z-index: 20;
+      min-width: 140px;
+      background: rgba(30, 30, 30, 0.85);
+      border: 1px dashed #58a6ff;
+      outline: none;
+      resize: none;
+      overflow: hidden;
+      font-family: "Segoe UI", sans-serif;
+      line-height: 1.4;
+      padding: 2px 4px;
+      white-space: pre;
+    }
+
     /* 代码黑滤镜 */
     .filter-dark-ide {
       filter: invert(0.92) hue-rotate(180deg) contrast(0.9) brightness(0.85);
@@ -774,6 +796,9 @@ function getWebviewContent(webview, uris) {
     let isDrawingDirty = false;
     let lastX = 0;
     let lastY = 0;
+
+    let textEditorEl = null;
+    let textEditorPos = null;
 
     let currentRenderTask = null;
     let isRendering = false;
@@ -872,6 +897,7 @@ function getWebviewContent(webview, uris) {
         case 'nextPage': nextPage(); break;
         case 'setPage':
           if (msg.page >= 1 && msg.page <= totalPages) {
+            if (textEditorEl) commitTextEditor();
             currentPageNum = msg.page;
             renderPage(currentPageNum);
           }
@@ -903,6 +929,7 @@ function getWebviewContent(webview, uris) {
 
     function zoomChange(delta, mousePos) {
       if (!pdfDoc) return;
+      if (textEditorEl) commitTextEditor();
       const oldScale = currentScale;
       const newScale = Math.max(0.5, Math.min(3.0, parseFloat((currentScale + delta).toFixed(2))));
       if (newScale === oldScale) return;
@@ -928,6 +955,7 @@ function getWebviewContent(webview, uris) {
 
     async function renderPage(num) {
       if (!pdfDoc) return;
+      if (textEditorEl) commitTextEditor();
       if (isRendering) {
         pendingRender = true;
         if (currentRenderTask) {
@@ -1049,16 +1077,22 @@ function getWebviewContent(webview, uris) {
 
     function prevPage() {
       if (currentPageNum <= 1) return;
+      if (textEditorEl) commitTextEditor();
       currentPageNum--;
       renderPage(currentPageNum);
     }
     function nextPage() {
       if (currentPageNum >= totalPages) return;
+      if (textEditorEl) commitTextEditor();
       currentPageNum++;
       renderPage(currentPageNum);
     }
 
     drawCanvas.addEventListener('pointerdown', (e) => {
+      if (currentTool === 'text') {
+        handleTextToolClick(e);
+        return;
+      }
       drawCanvas.setPointerCapture(e.pointerId);
       isDrawing = true;
       isDrawingDirty = true;
@@ -1121,7 +1155,81 @@ function getWebviewContent(webview, uris) {
     drawCanvas.addEventListener('pointerup', endStroke);
     drawCanvas.addEventListener('pointercancel', endStroke);
 
+    // ============ 打字输入笔记 (文字工具) ============
+
+    function handleTextToolClick(e) {
+      if (textEditorEl) {
+        commitTextEditor();
+        return;
+      }
+      const rect = drawCanvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const fontSize = Math.max(12, Math.round(14 * currentScale));
+
+      textEditorPos = { x, y };
+      textEditorEl = document.createElement('textarea');
+      textEditorEl.id = 'text-input';
+      textEditorEl.rows = 1;
+      textEditorEl.style.left = x + 'px';
+      textEditorEl.style.top = (y - 4) + 'px';
+      textEditorEl.style.fontSize = fontSize + 'px';
+      textEditorEl.style.color = currentColor;
+      textEditorEl.placeholder = '输入笔记，Enter 确认';
+      pageWrapper.appendChild(textEditorEl);
+      textEditorEl.focus();
+
+      textEditorEl.addEventListener('keydown', (ev) => {
+        ev.stopPropagation(); // 防止触发翻页/老板键等全局快捷键
+        if (ev.key === 'Enter' && !ev.shiftKey) {
+          ev.preventDefault();
+          commitTextEditor();
+        } else if (ev.key === 'Escape') {
+          ev.preventDefault();
+          cancelTextEditor();
+        }
+      });
+      textEditorEl.addEventListener('blur', () => commitTextEditor());
+    }
+
+    function commitTextEditor() {
+      if (!textEditorEl) return;
+      const el = textEditorEl;
+      const pos = textEditorPos;
+      textEditorEl = null;
+      textEditorPos = null;
+      el.remove();
+      if (pos && el.value.trim()) {
+        paintText(el.value, pos);
+      }
+    }
+
+    function cancelTextEditor() {
+      if (!textEditorEl) return;
+      const el = textEditorEl;
+      textEditorEl = null;
+      textEditorPos = null;
+      el.remove();
+    }
+
+    function paintText(value, pos) {
+      pushUndoSnapshot();
+      pageHasDoodles.add(currentPageNum);
+      isDrawingDirty = true;
+      const fontSize = Math.max(12, Math.round(14 * currentScale));
+      drawCtx.save();
+      drawCtx.fillStyle = currentColor;
+      drawCtx.textBaseline = 'top';
+      drawCtx.font = fontSize + 'px "Segoe UI", sans-serif';
+      value.split('\n').forEach((line, i) => {
+        drawCtx.fillText(line, pos.x, pos.y + i * Math.round(fontSize * 1.4));
+      });
+      drawCtx.restore();
+      saveCurrentPageDrawing();
+    }
+
     function triggerSave() {
+      if (textEditorEl) commitTextEditor();
       saveCurrentPageDrawing();
       const doodlesObj = {};
       for (const [p, d] of pageDoodles.entries()) {
@@ -1157,6 +1265,9 @@ function getWebviewContent(webview, uris) {
           notifyState();
         } else if (e.key === '3') {
           currentTool = 'eraser';
+          notifyState();
+        } else if (e.key === '4') {
+          currentTool = 'text';
           notifyState();
         } else if (e.key === '[') {
           // 减细粗细，最小 1px

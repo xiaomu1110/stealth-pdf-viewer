@@ -7,7 +7,7 @@
 **Stealth PDF & Exam Practice Editor for VS Code & Web**
 
 [![VS Code](https://img.shields.io/badge/VS%20Code-%3E%3D1.75.0-007ACC.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
-[![Version](https://img.shields.io/badge/Version-v1.4.1-success.svg)](https://github.com/xiaomu1110/stealth-pdf-viewer/releases)
+[![Version](https://img.shields.io/badge/Version-v1.5.0-success.svg)](https://github.com/xiaomu1110/stealth-pdf-viewer/releases)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)]()
 [![Offline](https://img.shields.io/badge/Network-100%25%20Offline-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -93,6 +93,7 @@
 
 3. **考公刷题涂鸦与系统原生指针**
    - **全套批注工具**：红笔选答案、蓝笔算草稿、绿笔核对、黄色荧光笔标关键词、极隐蔽代码灰。
+   - **打字输入笔记**：按 `4` 切换文字工具，点击页面任意位置直接打字输入 (支持多行)，Enter 确认后与手写笔迹一同持久化、云端同步并嵌入导出 PDF。
    - **微调细度**：支持最小 1px 超微细线（快捷键 `[` / `]` 即时调节）。
    - **原生标准指针**：告别突兀的绘图十字准星，全程使用操作系统标准鼠标箭头指针。
 
@@ -142,7 +143,8 @@
 | **`Esc`** / **`` ` ``** | **紧急老板键** | 在题册与真实工程代码之间瞬切，切出自动掩护 |
 | **`Ctrl + 鼠标滚轮`** | **放大 / 缩小试卷** | 50% ~ 300% 动态缩放，以光标为中心定位 |
 | **`A`** / **`D`** 或 **`←`** / **`→`** | 上一页 / 下一页 | 顺畅翻页刷题 |
-| **`1`** / **`2`** / **`3`** | 画笔 / 荧光划线笔 / 橡皮擦 | 快速切换答题与草稿工具 |
+| **`1`** / **`2`** / **`3`** / **`4`** | 画笔 / 荧光划线笔 / 橡皮擦 / **打字输入笔记** | 快速切换批注工具 |
+| **`Enter`** / **`Esc`** | 文字笔记确认 / 取消 (输入框内) | 打字输入笔记时生效 |
 | **`[`** / **`]`** | 画笔粗细减细 / 增粗 | 支持最小 1px 极细微线 |
 | **`Ctrl + Z`** | 撤销上一步笔画 | 擦除误画 |
 | **`Ctrl + S`** | 实时保存并写回原 PDF | 将修改页批注合并写回文件 |
@@ -158,7 +160,7 @@
 
 ### 方式 B：终端一键安装
 ```bash
-code --install-extension stealth-pdf-viewer-1.4.1.vsix
+code --install-extension stealth-pdf-viewer-1.5.0.vsix
 ```
 
 ---
@@ -238,6 +240,7 @@ Built specifically to handle multi-hundred-page documents without UI freezing:
 
 3. **Study Annotation Tools with System Cursor**
    - **Color Palette**: Red, Blue, Green, Yellow highlighter, and stealthy Code Gray.
+   - **Typed Notes**: Press `4` for the text tool, click anywhere on the page to type (multi-line supported). `Enter` commits — notes persist, cloud-sync and embed into the exported PDF together with handwriting.
    - **Adjustable Line Width**: Down to 1px ultra-fine lines (adjust via `[` / `]`).
    - **Standard Pointer**: Full native mouse pointer with no suspicious drawing crosshairs.
 
@@ -286,7 +289,8 @@ Built specifically to handle multi-hundred-page documents without UI freezing:
 | **`Esc`** / **`` ` ``** | **Boss Key** | Instant toggle between exam PDF and real code |
 | **`Ctrl + Wheel`** | **Zoom In / Out** | 50% ~ 300% zoom centered on cursor |
 | **`A`** / **`D`** or **`←`** / **`→`** | Prev / Next Page | Page navigation |
-| **`1`** / **`2`** / **`3`** | Pen / Highlighter / Eraser | Tool selection |
+| **`1`** / **`2`** / **`3`** / **`4`** | Pen / Highlighter / Eraser / **Typed Notes** | Tool selection |
+| **`Enter`** / **`Esc`** | Commit / Cancel text note (inside input box) | While typing notes |
 | **`[`** / **`]`** | Decrease / Increase Line Width | Fine-tuning down to 1px |
 | **`Ctrl + Z`** | Undo | Undo last stroke |
 | **`Ctrl + S`** | Save to Original PDF | Embed doodles into PDF file |
@@ -302,7 +306,7 @@ Built specifically to handle multi-hundred-page documents without UI freezing:
 
 ### Method B: Terminal Command
 ```bash
-code --install-extension stealth-pdf-viewer-1.4.1.vsix
+code --install-extension stealth-pdf-viewer-1.5.0.vsix
 ```
 
 ---

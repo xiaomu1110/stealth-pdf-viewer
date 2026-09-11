@@ -131,6 +131,22 @@
       left: 0;
       display: block;
     }
+
+    #text-input {
+      position: absolute;
+      z-index: 20;
+      min-width: 140px;
+      background: rgba(30, 30, 30, 0.9);
+      border: 1px dashed #58a6ff;
+      outline: none;
+      resize: none;
+      overflow: hidden;
+      font-family: -apple-system, "Segoe UI", sans-serif;
+      line-height: 1.4;
+      padding: 2px 4px;
+      white-space: pre;
+      color: #e06c75;
+    }
     #draw-canvas {
       z-index: 10;
       cursor: crosshair;
@@ -280,6 +296,7 @@
       <button class="btn active" id="btn-mode-pen" onclick="setTool('pen')" title="画笔 (快捷键 1)">✏️ 笔</button>
       <button class="btn" id="btn-mode-highlighter" onclick="setTool('highlighter')" title="荧光标记 (快捷键 2)">🖍️ 荧光标记</button>
       <button class="btn" id="btn-mode-eraser" onclick="setTool('eraser')" title="橡皮擦 (快捷键 3)">🧹 橡皮</button>
+      <button class="btn" id="btn-mode-text" onclick="setTool('text')" title="打字输入笔记 (快捷键 4)">🔤 文字</button>
       <button class="btn" onclick="undo()" title="撤销 (Ctrl+Z)">↩ 撤销</button>
       <button class="btn btn-danger" onclick="clearCurrentPageDoodles()" title="清空当前页涂鸦">🗑️ 清页</button>
 
@@ -403,6 +420,9 @@
     let lastX = 0;
     let lastY = 0;
 
+    let textEditorEl = null;
+    let textEditorPos = null;
+
     let currentRenderTask = null;
     let isRendering = false;
     let pendingRender = false;
@@ -503,6 +523,7 @@
     // 渲染页面
     async function renderPage(num) {
       if (!pdfDoc) return;
+      if (textEditorEl) commitTextEditor();
       if (isRendering) {
         pendingRender = true;
         if (currentRenderTask) {
@@ -622,11 +643,13 @@
     // 翻页
     function prevPage() {
       if (currentPageNum <= 1) return;
+      if (textEditorEl) commitTextEditor();
       currentPageNum--;
       renderPage(currentPageNum);
     }
     function nextPage() {
       if (currentPageNum >= totalPages) return;
+      if (textEditorEl) commitTextEditor();
       currentPageNum++;
       renderPage(currentPageNum);
     }
@@ -648,6 +671,10 @@
 
     // 指针事件 (兼容 鼠标 / 触控笔 / 手指)
     drawCanvas.addEventListener('pointerdown', (e) => {
+      if (currentTool === 'text') {
+        handleTextToolClick(e);
+        return;
+      }
       drawCanvas.setPointerCapture(e.pointerId);
       isDrawing = true;
       isDrawingDirty = true;
@@ -711,8 +738,82 @@
     drawCanvas.addEventListener('pointerup', endStroke);
     drawCanvas.addEventListener('pointercancel', endStroke);
 
+    // ============ 打字输入笔记 (文字工具) ============
+
+    function handleTextToolClick(e) {
+      if (textEditorEl) {
+        commitTextEditor();
+        return;
+      }
+      const rect = drawCanvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const fontSize = Math.max(12, Math.round(14 * currentScale));
+
+      textEditorPos = { x, y };
+      textEditorEl = document.createElement('textarea');
+      textEditorEl.id = 'text-input';
+      textEditorEl.rows = 1;
+      textEditorEl.style.left = x + 'px';
+      textEditorEl.style.top = (y - 4) + 'px';
+      textEditorEl.style.fontSize = fontSize + 'px';
+      textEditorEl.style.color = currentColor;
+      textEditorEl.placeholder = '输入笔记，Enter 确认';
+      pageWrapper.appendChild(textEditorEl);
+      textEditorEl.focus();
+
+      textEditorEl.addEventListener('keydown', (ev) => {
+        ev.stopPropagation(); // 防止触发翻页/老板键等全局快捷键
+        if (ev.key === 'Enter' && !ev.shiftKey) {
+          ev.preventDefault();
+          commitTextEditor();
+        } else if (ev.key === 'Escape') {
+          ev.preventDefault();
+          cancelTextEditor();
+        }
+      });
+      textEditorEl.addEventListener('blur', () => commitTextEditor());
+    }
+
+    function commitTextEditor() {
+      if (!textEditorEl) return;
+      const el = textEditorEl;
+      const pos = textEditorPos;
+      textEditorEl = null;
+      textEditorPos = null;
+      el.remove();
+      if (pos && el.value.trim()) {
+        paintText(el.value, pos);
+      }
+    }
+
+    function cancelTextEditor() {
+      if (!textEditorEl) return;
+      const el = textEditorEl;
+      textEditorEl = null;
+      textEditorPos = null;
+      el.remove();
+    }
+
+    function paintText(value, pos) {
+      pushUndoSnapshot();
+      pageHasDoodles.add(currentPageNum);
+      isDrawingDirty = true;
+      const fontSize = Math.max(12, Math.round(14 * currentScale));
+      drawCtx.save();
+      drawCtx.fillStyle = currentColor;
+      drawCtx.textBaseline = 'top';
+      drawCtx.font = fontSize + 'px "Segoe UI", sans-serif';
+      value.split('\n').forEach((line, i) => {
+        drawCtx.fillText(line, pos.x, pos.y + i * Math.round(fontSize * 1.4));
+      });
+      drawCtx.restore();
+      saveCurrentPageDrawing();
+    }
+
     function clearCurrentPageDoodles() {
       if (confirm('确认清空当前页所有笔记？')) {
+        if (textEditorEl) cancelTextEditor();
         pushUndoSnapshot();
         const dpr = window.devicePixelRatio || 1;
         drawCtx.clearRect(0, 0, drawCanvas.width / dpr, drawCanvas.height / dpr);
@@ -803,6 +904,7 @@
         alert('请先打开题册 PDF 文件！');
         return;
       }
+      if (textEditorEl) commitTextEditor();
       saveCurrentPageDrawing();
 
       const saveBtn = document.getElementById('btn-save');
@@ -883,6 +985,7 @@
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         if (!pdfDoc || (bossScreen && bossScreen.style.display === 'flex')) return;
+        if (textEditorEl) commitTextEditor();
         const delta = e.deltaY < 0 ? 0.1 : -0.1;
         zoomChange(delta, { clientX: e.clientX, clientY: e.clientY });
       }
@@ -909,6 +1012,8 @@
           setTool('highlighter');
         } else if (e.key === '3') {
           setTool('eraser');
+        } else if (e.key === '4') {
+          setTool('text');
         } else if (e.key === 'z' && (e.ctrlKey || e.metaKey)) {
           e.preventDefault();
           undo();

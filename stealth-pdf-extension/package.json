@@ -2,7 +2,7 @@
   "name": "stealth-pdf-viewer",
   "displayName": "Log & Metrics Document Viewer",
   "description": "Cluster log and metrics documentation visualizer (Stealth PDF)",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "publisher": "developer",
   "icon": "icon.png",
   "engines": {
@@ -41,6 +41,7 @@
       { "command": "stealth-pdf.setPen", "title": "Stealth PDF: 画笔" },
       { "command": "stealth-pdf.setHighlighter", "title": "Stealth PDF: 荧光划线" },
       { "command": "stealth-pdf.setEraser", "title": "Stealth PDF: 橡皮擦" },
+      { "command": "stealth-pdf.setText", "title": "Stealth PDF: 文字输入笔记" },
       { "command": "stealth-pdf.cycleColor", "title": "Stealth PDF: 切换颜色" },
       { "command": "stealth-pdf.cycleWidth", "title": "Stealth PDF: 切换画笔粗细" },
       { "command": "stealth-pdf.undo", "title": "Stealth PDF: 撤销" },
