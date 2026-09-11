@@ -740,17 +740,23 @@ function getWebviewContent(webview, uris) {
 
     #text-input {
       position: absolute;
-      z-index: 20;
+      z-index: 50;
       min-width: 140px;
-      background: rgba(30, 30, 30, 0.85);
-      border: 1px dashed #58a6ff;
+      min-height: 28px;
+      background: #1e1e1e;
+      border: 1.5px dashed #58a6ff;
+      border-radius: 3px;
       outline: none;
-      resize: none;
+      resize: both;
       overflow: hidden;
       font-family: "Segoe UI", sans-serif;
       line-height: 1.4;
-      padding: 2px 4px;
-      white-space: pre;
+      padding: 4px 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      user-select: text;
+      -webkit-user-select: text;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
     }
 
     /* 代码黑滤镜 */
@@ -1090,8 +1096,7 @@ function getWebviewContent(webview, uris) {
 
     drawCanvas.addEventListener('pointerdown', (e) => {
       if (currentTool === 'text') {
-        handleTextToolClick(e);
-        return;
+        return; // 文字工具交由 click 处理，避免 mousedown 抢焦触发 blur
       }
       drawCanvas.setPointerCapture(e.pointerId);
       isDrawing = true;
@@ -1154,10 +1159,14 @@ function getWebviewContent(webview, uris) {
     }
     drawCanvas.addEventListener('pointerup', endStroke);
     drawCanvas.addEventListener('pointercancel', endStroke);
+    drawCanvas.addEventListener('click', (e) => {
+      if (currentTool === 'text') handleTextToolClick(e);
+    });
 
     // ============ 打字输入笔记 (文字工具) ============
 
     function handleTextToolClick(e) {
+      if (currentTool !== 'text') return;
       if (textEditorEl) {
         commitTextEditor();
         return;
@@ -1175,12 +1184,15 @@ function getWebviewContent(webview, uris) {
       textEditorEl.style.top = (y - 4) + 'px';
       textEditorEl.style.fontSize = fontSize + 'px';
       textEditorEl.style.color = currentColor;
-      textEditorEl.placeholder = '输入笔记，Enter 确认';
+      textEditorEl.placeholder = '输入笔记，Enter 确认，Esc 取消';
       pageWrapper.appendChild(textEditorEl);
-      textEditorEl.focus();
+
+      setTimeout(() => {
+        if (textEditorEl) textEditorEl.focus();
+      }, 30);
 
       textEditorEl.addEventListener('keydown', (ev) => {
-        ev.stopPropagation(); // 防止触发翻页/老板键等全局快捷键
+        ev.stopPropagation();
         if (ev.key === 'Enter' && !ev.shiftKey) {
           ev.preventDefault();
           commitTextEditor();
@@ -1189,7 +1201,13 @@ function getWebviewContent(webview, uris) {
           cancelTextEditor();
         }
       });
-      textEditorEl.addEventListener('blur', () => commitTextEditor());
+
+      setTimeout(() => {
+        if (!textEditorEl) return;
+        textEditorEl.addEventListener('blur', () => {
+          setTimeout(() => commitTextEditor(), 100);
+        });
+      }, 150);
     }
 
     function commitTextEditor() {
@@ -1252,7 +1270,7 @@ function getWebviewContent(webview, uris) {
         return;
       }
 
-      if (e.target.tagName !== 'INPUT') {
+      if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA' && !textEditorEl) {
         if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A' || e.key === 'PageUp') {
           prevPage();
         } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D' || e.key === 'PageDown') {
