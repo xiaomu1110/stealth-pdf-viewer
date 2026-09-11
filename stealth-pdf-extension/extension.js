@@ -1221,7 +1221,7 @@ function getWebviewContent(webview, uris) {
       drawCtx.fillStyle = currentColor;
       drawCtx.textBaseline = 'top';
       drawCtx.font = fontSize + 'px "Segoe UI", sans-serif';
-      value.split('\n').forEach((line, i) => {
+      value.split('\\n').forEach((line, i) => {
         drawCtx.fillText(line, pos.x, pos.y + i * Math.round(fontSize * 1.4));
       });
       drawCtx.restore();
