@@ -2,8 +2,13 @@
   "name": "stealth-pdf-viewer",
   "displayName": "Log & Metrics Document Viewer",
   "description": "Cluster log and metrics documentation visualizer (Stealth PDF)",
-  "version": "1.5.3",
+  "version": "1.5.5",
   "publisher": "developer",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xiaomu1110/stealth-pdf-viewer.git"
+  },
+  "license": "MIT",
   "icon": "icon.png",
   "engines": {
     "vscode": "^1.75.0"
@@ -13,7 +18,8 @@
   ],
   "activationEvents": [
     "onCustomEditor:stealth-pdf.editor",
-    "onCommand:stealth-pdf.open"
+    "onCommand:stealth-pdf.open",
+    "onCommand:stealth-pdf.downloadFromCloud"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -48,7 +54,12 @@
       { "command": "stealth-pdf.toggleDark", "title": "Stealth PDF: 切换代码黑模式" },
       { "command": "stealth-pdf.save", "title": "Stealth PDF: 保存做题笔记" },
       { "command": "stealth-pdf.bossToggle", "title": "Stealth PDF: 老板键切回题册" },
-      { "command": "stealth-pdf.syncCloud", "title": "Stealth PDF: 同步当前题册至 Gitee" }
+      { "command": "stealth-pdf.syncCloud", "title": "Stealth PDF: 同步当前题册至 Gitee" },
+      {
+        "command": "stealth-pdf.downloadFromCloud",
+        "title": "Stealth PDF: 从云端拉取题册 (云端书库)",
+        "category": "Developer"
+      }
     ],
     "configuration": {
       "title": "Stealth PDF Viewer",

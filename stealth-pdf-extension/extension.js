@@ -200,21 +200,216 @@ async function uploadToGitee(config, cloudPath, contentBuffer, message) {
   }
 }
 
+function fetchBufferWithProxy(requestUrl, proxyUrl, redirectCount = 0) {
+  if (redirectCount > 5) {
+    return Promise.reject(new Error('请求重定向次数过多'));
+  }
+
+  return new Promise(async (resolve, reject) => {
+    try {
+      const u = new URL(requestUrl);
+      const isHttps = u.protocol === 'https:';
+      const client = isHttps ? https : http;
+      const port = u.port ? parseInt(u.port) : (isHttps ? 443 : 80);
+
+      const options = {
+        hostname: u.hostname,
+        port,
+        path: u.pathname + u.search,
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) StealthPDFViewer'
+        },
+        timeout: 120000
+      };
+
+      if (proxyUrl) {
+        const socket = await connectViaProxy(proxyUrl, u.hostname, port);
+        options.agent = false;
+        if (isHttps) {
+          options.createConnection = () => tls.connect({ socket, servername: u.hostname });
+        } else {
+          options.createConnection = () => socket;
+        }
+      }
+
+      const req = client.request(options, (res) => {
+        if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
+          const redirectLocation = res.headers.location;
+          if (!redirectLocation) {
+            return reject(new Error('重定向缺少 Location'));
+          }
+          const nextUrl = new URL(redirectLocation, requestUrl).toString();
+          return resolve(fetchBufferWithProxy(nextUrl, proxyUrl, redirectCount + 1));
+        }
+
+        if (res.statusCode === 404) {
+          return resolve({ status: 404, data: null });
+        }
+
+        if (res.statusCode !== 200) {
+          return reject(new Error(`下载失败 (HTTP ${res.statusCode})`));
+        }
+
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          resolve({ status: 200, data: Buffer.concat(chunks) });
+        });
+      });
+
+      req.on('timeout', () => {
+        req.destroy(new Error(
+          '下载连接超时' + (proxyUrl ? ' (经代理 ' + proxyUrl + ')' : ' (当前直连)')
+        ));
+      });
+      req.on('error', reject);
+      req.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
 async function downloadFromGitee(config, cloudPath) {
-  const encPath = encodeURIComponent(cloudPath);
+  const pathParts = cloudPath.split('/').map(p => encodeURIComponent(p)).join('/');
+  const branchParam = config.branch ? `&ref=${encodeURIComponent(config.branch)}` : '';
+  const rawUrl = `https://gitee.com/api/v5/repos/${config.repo}/raw/${pathParts}?access_token=${encodeURIComponent(config.token)}${branchParam}`;
+
+  const proxyUrl = getGiteeProxy();
+  const res = await fetchBufferWithProxy(rawUrl, proxyUrl);
+  if (res.status === 404) {
+    return null;
+  }
+  return res.data;
+}
+
+function formatBytes(bytes) {
+  if (!bytes || bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+async function listGiteeBooks(config) {
+  const encPath = encodeURIComponent('StealthPDFSync');
   const branchParam = config.branch ? `&ref=${encodeURIComponent(config.branch)}` : '';
   const query = `?access_token=${encodeURIComponent(config.token)}${branchParam}`;
   const res = await giteeRequest('GET', `/repos/${config.repo}/contents/${encPath}${query}`);
-  if (res.status === 404) return null;
-  if (res.status !== 200 || !res.body || !res.body.content) {
-    throw new Error(giteeErrMsg(res, '从 Gitee 下载失败'));
+  if (res.status === 404) return [];
+  if (res.status !== 200 || !Array.isArray(res.body)) {
+    throw new Error(giteeErrMsg(res, '获取云端题册列表失败'));
   }
-  return Buffer.from(res.body.content.replace(/\n/g, ''), 'base64');
+
+  const books = [];
+  for (const item of res.body) {
+    if (item.type === 'file' && item.name && item.name.toLowerCase().endsWith('.pdf')) {
+      const match = item.name.match(/^[0-9a-fA-F]{12}_(.*\.pdf)$/i);
+      const displayName = match ? match[1] : item.name;
+      books.push({
+        displayName,
+        fileName: item.name,
+        path: item.path,
+        size: item.size || 0,
+        sha: item.sha
+      });
+    }
+  }
+  return books;
+}
+
+async function downloadBookFromCloud(context) {
+  const config = getGiteeConfig();
+  if (!config.token || !config.repo) {
+    if (!await promptGiteeConfig(config)) return;
+  }
+
+  let books = [];
+  try {
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: '正在获取云端题册列表...' },
+      async () => {
+        books = await listGiteeBooks(config);
+      }
+    );
+  } catch (err) {
+    vscode.window.showErrorMessage('获取云端题册列表失败: ' + err.message);
+    return;
+  }
+
+  if (books.length === 0) {
+    vscode.window.showInformationMessage('云端 (StealthPDFSync) 暂无已上传的题册，请先在其他电脑上传');
+    return;
+  }
+
+  const pick = await vscode.window.showQuickPick(
+    books.map(b => ({
+      label: `$(file-pdf) ${b.displayName}`,
+      description: formatBytes(b.size),
+      detail: `云端文件: ${b.fileName}`,
+      book: b
+    })),
+    { placeHolder: '选择要拉取到本地的云端题册' }
+  );
+  if (!pick) return;
+
+  const targetBook = pick.book;
+
+  let defaultUri = undefined;
+  if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+    defaultUri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, targetBook.displayName);
+  }
+
+  const saveUri = await vscode.window.showSaveDialog({
+    title: '选择题册在本地的保存位置',
+    defaultUri,
+    filters: { 'PDF 题册': ['pdf'] },
+    saveLabel: '下载并打开'
+  });
+  if (!saveUri) return;
+
+  try {
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `正在从 Gitee 下载: ${targetBook.displayName}` },
+      async (progress) => {
+        progress.report({ message: '正在下载 PDF 文件...' });
+        const pdfBytes = await downloadFromGitee(config, targetBook.path);
+        if (!pdfBytes) {
+          throw new Error('下载文件内容为空');
+        }
+        await vscode.workspace.fs.writeFile(saveUri, pdfBytes);
+
+        progress.report({ message: '正在检查并恢复笔记...' });
+        const remoteNotes = await downloadFromGitee(config, targetBook.path + '.notes.json');
+        if (remoteNotes) {
+          try {
+            const parsed = JSON.parse(remoteNotes.toString('utf8'));
+            await saveDoodles(context, saveUri.fsPath, parsed);
+          } catch (e) {
+            console.warn('解析云端笔记失败:', e);
+          }
+        }
+      }
+    );
+
+    vscode.window.showInformationMessage(`已成功拉取题册: ${targetBook.displayName}`);
+    await vscode.commands.executeCommand('vscode.openWith', saveUri, 'stealth-pdf.editor');
+  } catch (err) {
+    vscode.window.showErrorMessage('拉取题册失败: ' + err.message);
+  }
 }
 
 async function cloudSyncCurrentPdf(context) {
   if (!activeFileUri) {
-    vscode.window.showWarningMessage('请先打开要同步的题册 PDF');
+    const action = await vscode.window.showInformationMessage(
+      '当前未打开任何题册，是否从云端书库拉取题册到本地？',
+      '从云端拉取题册',
+      '取消'
+    );
+    if (action === '从云端拉取题册') {
+      return downloadBookFromCloud(context);
+    }
     return;
   }
 
@@ -247,14 +442,36 @@ async function cloudSyncCurrentPdf(context) {
           }
           vscode.window.setStatusBarMessage(`$(check) 题册已同步至 Gitee: ${fileName}`, 4000);
         } else {
-          const remote = await downloadFromGitee(config, cloudPath);
+          let remote = await downloadFromGitee(config, cloudPath);
+          let actualCloudPath = cloudPath;
+
+          if (!remote) {
+            try {
+              const books = await listGiteeBooks(config);
+              const matched = books.filter(b => b.displayName === fileName || b.fileName.endsWith('_' + fileName));
+              if (matched.length === 1) {
+                actualCloudPath = matched[0].path;
+                remote = await downloadFromGitee(config, actualCloudPath);
+              } else if (matched.length > 1) {
+                const choice = await vscode.window.showQuickPick(
+                  matched.map(b => ({ label: `$(file-pdf) ${b.displayName}`, detail: b.path, book: b })),
+                  { placeHolder: '在云端发现多个同名题册，请选择要拉取的版本:' }
+                );
+                if (choice) {
+                  actualCloudPath = choice.book.path;
+                  remote = await downloadFromGitee(config, actualCloudPath);
+                }
+              }
+            } catch (e) {}
+          }
+
           if (!remote) {
             vscode.window.showWarningMessage('云端未找到该题册，请先在其他设备上传');
             return;
           }
           await vscode.workspace.fs.writeFile(activeFileUri, remote);
 
-          const remoteNotes = await downloadFromGitee(config, cloudPath + '.notes.json');
+          const remoteNotes = await downloadFromGitee(config, actualCloudPath + '.notes.json');
           if (remoteNotes) {
             await saveDoodles(context, activeFileUri.fsPath, JSON.parse(remoteNotes.toString('utf8')));
           }
@@ -493,7 +710,8 @@ function registerControlCommands(context) {
     vscode.commands.registerCommand('stealth-pdf.bossToggle', async () => {
       await handleBossToggle();
     }),
-    vscode.commands.registerCommand('stealth-pdf.syncCloud', () => cloudSyncCurrentPdf(context))
+    vscode.commands.registerCommand('stealth-pdf.syncCloud', () => cloudSyncCurrentPdf(context)),
+    vscode.commands.registerCommand('stealth-pdf.downloadFromCloud', () => downloadBookFromCloud(context))
   );
 }
 
