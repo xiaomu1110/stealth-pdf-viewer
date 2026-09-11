@@ -1,11 +1,13 @@
 const vscode = require('vscode');
 const path = require('path');
+const https = require('https');
 const { PDFDocument, degrees } = require('./lib/pdf-lib.min.js');
 
 let activePanel = null;
 let activeFileUri = null;
 let lastPdfUri = null;
 let isBossActive = false;
+let reloadActivePdf = null;
 const statusItems = {};
 
 async function getDoodles(context, filePath) {
@@ -28,6 +30,163 @@ async function saveDoodles(context, filePath, doodles) {
     await vscode.workspace.fs.writeFile(doodleUri, content);
   } catch (e) {
     console.error('Failed to save doodles:', e);
+  }
+}
+
+// ===================== Gitee 云端同步（仅同步当前打开的 PDF） =====================
+
+function getGiteeConfig() {
+  const cfg = vscode.workspace.getConfiguration('stealth-pdf');
+  return {
+    token: cfg.get('gitee.token') || '',
+    repo: cfg.get('gitee.repo') || '',
+    branch: cfg.get('gitee.branch') || 'master'
+  };
+}
+
+async function promptGiteeConfig(config) {
+  const token = await vscode.window.showInputBox({
+    prompt: '输入 Gitee 私人令牌 (设置-私人令牌-生成新令牌，勾选 projects)',
+    password: true,
+    ignoreFocusOut: true
+  });
+  if (!token) return false;
+  const repo = await vscode.window.showInputBox({
+    prompt: '输入用于同步的 Gitee 仓库路径 (如: myname/my-notes，支持私有仓库)',
+    placeHolder: 'owner/repo',
+    ignoreFocusOut: true
+  });
+  if (!repo) return false;
+
+  const cfg = vscode.workspace.getConfiguration('stealth-pdf');
+  await cfg.update('gitee.token', token, vscode.ConfigurationTarget.Global);
+  await cfg.update('gitee.repo', repo, vscode.ConfigurationTarget.Global);
+  config.token = token;
+  config.repo = repo;
+  return true;
+}
+
+function giteeRequest(method, pathname, payload) {
+  return new Promise((resolve, reject) => {
+    const body = payload ? JSON.stringify(payload) : null;
+    const req = https.request({
+      hostname: 'gitee.com',
+      path: '/api/v5' + pathname,
+      method,
+      headers: Object.assign(
+        { 'Content-Type': 'application/json' },
+        body ? { 'Content-Length': Buffer.byteLength(body) } : {}
+      ),
+      timeout: 60000
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        let parsed = null;
+        try { parsed = JSON.parse(data); } catch (e) {}
+        resolve({ status: res.statusCode, body: parsed });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('连接 Gitee 超时')));
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function giteeErrMsg(res, fallback) {
+  return (res.body && (res.body.message || res.body.errorMessage)) || fallback + ` (HTTP ${res.status})`;
+}
+
+async function uploadToGitee(config, cloudPath, contentBuffer, message) {
+  const encPath = encodeURIComponent(cloudPath);
+  const query = `?access_token=${encodeURIComponent(config.token)}&ref=${encodeURIComponent(config.branch)}`;
+
+  const head = await giteeRequest('GET', `/repos/${config.repo}/contents/${encPath}${query}`);
+  if (head.status !== 200 && head.status !== 404) {
+    throw new Error(giteeErrMsg(head, '检查云端文件失败'));
+  }
+
+  const payload = {
+    access_token: config.token,
+    content: contentBuffer.toString('base64'),
+    branch: config.branch,
+    message
+  };
+  if (head.status === 200 && head.body && head.body.sha) {
+    payload.sha = head.body.sha; // 已存在则更新
+  }
+
+  const res = await giteeRequest('PUT', `/repos/${config.repo}/contents/${encPath}`, payload);
+  if (res.status !== 200 && res.status !== 201) {
+    throw new Error(giteeErrMsg(res, '上传到 Gitee 失败'));
+  }
+}
+
+async function downloadFromGitee(config, cloudPath) {
+  const encPath = encodeURIComponent(cloudPath);
+  const query = `?access_token=${encodeURIComponent(config.token)}&ref=${encodeURIComponent(config.branch)}`;
+  const res = await giteeRequest('GET', `/repos/${config.repo}/contents/${encPath}${query}`);
+  if (res.status === 404) return null;
+  if (res.status !== 200 || !res.body || !res.body.content) {
+    throw new Error(giteeErrMsg(res, '从 Gitee 下载失败'));
+  }
+  return Buffer.from(res.body.content.replace(/\n/g, ''), 'base64');
+}
+
+async function cloudSyncCurrentPdf(context) {
+  if (!activeFileUri) {
+    vscode.window.showWarningMessage('请先打开要同步的题册 PDF');
+    return;
+  }
+
+  const config = getGiteeConfig();
+  if (!config.token || !config.repo) {
+    if (!await promptGiteeConfig(config)) return;
+  }
+
+  const pick = await vscode.window.showQuickPick([
+    { label: '$(cloud-upload) 上传当前题册到云端', detail: '将当前 PDF 及做题笔记推送至 Gitee 仓库', action: 'push' },
+    { label: '$(cloud-download) 从云端拉取当前题册', detail: '用云端版本覆盖本地 PDF 并恢复笔记', action: 'pull' }
+  ], { placeHolder: 'Gitee 云同步（仅同步当前打开的 PDF 及其笔记，不影响其他文件）' });
+  if (!pick) return;
+
+  const fileName = path.basename(activeFileUri.fsPath);
+  const cloudPath = `StealthPDFSync/${Buffer.from(activeFileUri.fsPath).toString('hex').slice(0, 12)}_${fileName}`;
+
+  try {
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Gitee 云同步: ${fileName}` },
+      async () => {
+        if (pick.action === 'push') {
+          const pdfBytes = Buffer.from(await vscode.workspace.fs.readFile(activeFileUri));
+          await uploadToGitee(config, cloudPath, pdfBytes, `sync: ${fileName}`);
+
+          const doodles = await getDoodles(context, activeFileUri.fsPath);
+          if (Object.keys(doodles).length > 0) {
+            const notesBuf = Buffer.from(JSON.stringify(doodles), 'utf8');
+            await uploadToGitee(config, cloudPath + '.notes.json', notesBuf, `sync notes: ${fileName}`);
+          }
+          vscode.window.setStatusBarMessage(`$(check) 题册已同步至 Gitee: ${fileName}`, 4000);
+        } else {
+          const remote = await downloadFromGitee(config, cloudPath);
+          if (!remote) {
+            vscode.window.showWarningMessage('云端未找到该题册，请先在其他设备上传');
+            return;
+          }
+          await vscode.workspace.fs.writeFile(activeFileUri, remote);
+
+          const remoteNotes = await downloadFromGitee(config, cloudPath + '.notes.json');
+          if (remoteNotes) {
+            await saveDoodles(context, activeFileUri.fsPath, JSON.parse(remoteNotes.toString('utf8')));
+          }
+          if (reloadActivePdf) reloadActivePdf();
+          vscode.window.setStatusBarMessage(`$(check) 已从 Gitee 拉取题册: ${fileName}`, 4000);
+        }
+      }
+    );
+  } catch (err) {
+    vscode.window.showErrorMessage('Gitee 云同步失败: ' + err.message);
   }
 }
 
@@ -130,7 +289,13 @@ function activate(context) {
 
 function initStatusBar(context) {
   const prioBase = 100;
-  
+
+  // Gitee 云同步
+  statusItems.sync = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase + 11);
+  statusItems.sync.text = '$(cloud) 同步';
+  statusItems.sync.tooltip = 'Gitee 云同步当前题册 (仅同步打开的 PDF 及其笔记)';
+  statusItems.sync.command = 'stealth-pdf.syncCloud';
+
   // 翻页与跳页
   statusItems.prev = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, prioBase + 10);
   statusItems.prev.text = '$(chevron-left)';
@@ -243,7 +408,8 @@ function registerControlCommands(context) {
     // 核心：老板键跳出与切回命令
     vscode.commands.registerCommand('stealth-pdf.bossToggle', async () => {
       await handleBossToggle();
-    })
+    }),
+    vscode.commands.registerCommand('stealth-pdf.syncCloud', () => cloudSyncCurrentPdf(context))
   );
 }
 
@@ -376,7 +542,15 @@ function setupEditorPanel(context, panel, fileUri) {
       activePanel = null;
       hideEditorStatusItems();
     }
+    if (reloadActivePdf === reloadFn) {
+      reloadActivePdf = null;
+    }
   });
+
+  function reloadFn() {
+    loadFile();
+  }
+  reloadActivePdf = reloadFn;
 
   // 接收 Webview 消息
   panel.webview.onDidReceiveMessage(async (message) => {

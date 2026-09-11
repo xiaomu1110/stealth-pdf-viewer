@@ -7,7 +7,7 @@
 **Stealth PDF & Exam Practice Editor for VS Code & Web**
 
 [![VS Code](https://img.shields.io/badge/VS%20Code-%3E%3D1.75.0-007ACC.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
-[![Version](https://img.shields.io/badge/Version-v1.3.2-success.svg)](https://github.com/xiaomu1110/stealth-pdf-viewer/releases)
+[![Version](https://img.shields.io/badge/Version-v1.4.0-success.svg)](https://github.com/xiaomu1110/stealth-pdf-viewer/releases)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)]()
 [![Offline](https://img.shields.io/badge/Network-100%25%20Offline-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -99,12 +99,42 @@
 4. **工位防窥「代码黑」模式**
    - 一键开启深色滤镜，白底黑字的扫描题册瞬间反转为 VS Code 原生 `#1e1e1e` 深色背景，黑字变为浅灰代码文字，过道外侧看如同在阅读长篇技术文档。
 
-5. **双模支持：VS Code 扩展 + 独立免装网页版**
+5. **Gitee 云端多设备同步（仅同步打开的题册）**
+   - 状态栏点击「$(cloud) 同步」即可将**当前打开的 PDF 及其做题笔记**上传到自己的 Gitee 私有仓库；换设备后从云端拉取即可无缝继续刷题。
+   - 严格只同步当前题册单文件，绝不上传整个文件夹；支持私有仓库，令牌保存在本地配置中。
+
+6. **双模支持：VS Code 扩展 + 独立免装网页版**
    - 随仓库提供 `index.html`，在未安装 VS Code 的电脑上直接使用 Edge / Chrome 双击离线使用。网页版自带 `localStorage` 自动记忆笔迹。
 
 ---
 
-## ⌨️ 快捷键速查表
+## ☁️ Gitee 云端同步
+
+```text
+ [ 设备 A: 公司电脑 ]                          [ 设备 B: 家里电脑 ]
+   打开题册 → 做题批注                           打开同一题册
+        │                                             ▲
+        │  点击状态栏「$(cloud) 同步」→ 上传             │ 点击「同步」→ 拉取
+        ▼                                             │
+   ┌──────────────────────────────────────────────────┴─┐
+   │        Gitee 私有仓库 (仅当前题册 PDF + 笔记)        │
+   └────────────────────────────────────────────────────┘
+```
+
+**首次使用配置（也可点击同步按钮时按提示输入）：**
+
+```jsonc
+// VS Code Settings.json
+{
+  "stealth-pdf.gitee.token": "你的 Gitee 私人令牌",   // Gitee → 设置 → 私人令牌 → 勾选 projects
+  "stealth-pdf.gitee.repo": "myname/my-notes",       // 用于同步的仓库，支持私有仓库
+  "stealth-pdf.gitee.branch": "master"              // 同步分支，默认 master
+}
+```
+
+- **上传**：状态栏「同步」→ 选择上传，将当前 PDF 与笔记 JSON 推送到仓库 `StealthPDFSync/` 目录。
+- **拉取**：状态栏「同步」→ 选择拉取，云端版本覆盖本地并自动恢复笔记。
+- 同一题册重复上传自动覆盖更新（基于 sha），不会产生冗余历史文件。
 
 | 快捷键 | 功能说明 | 使用场景 |
 |---|---|---|
@@ -127,7 +157,7 @@
 
 ### 方式 B：终端一键安装
 ```bash
-code --install-extension stealth-pdf-viewer-1.3.2.vsix
+code --install-extension stealth-pdf-viewer-1.4.0.vsix
 ```
 
 ---
@@ -213,12 +243,42 @@ Built specifically to handle multi-hundred-page documents without UI freezing:
 4. **"Dark Code" Anti-Peep Mode**
    - Invert white exam pages into native VS Code `#1e1e1e` dark theme colors. From a distance, it appears identical to viewing software documentation.
 
-5. **Dual Mode: VS Code Extension + Standalone Webpage**
+5. **Gitee Cloud Sync (Current PDF Only)**
+   - Click the "$(cloud) Sync" button in the status bar to push **only the currently opened PDF and its notes** to your own private Gitee repository. Pull on another device to continue where you left off.
+   - Strictly single-file sync — never uploads the entire folder; works with private repos, token stored locally.
+
+6. **Dual Mode: VS Code Extension + Standalone Webpage**
    - Includes `index.html` for offline zero-install browser usage (Chrome, Edge, Firefox). Features automatic `localStorage` doodle caching.
 
 ---
 
-## ⌨️ Shortcut Cheat Sheet
+## ☁️ Gitee Cloud Sync
+
+```text
+ [ Device A: Office PC ]                        [ Device B: Home PC ]
+   Open PDF → Annotate                            Open the same PDF
+        │                                             ▲
+        │  Status bar "$(cloud) Sync" → Upload          │ "Sync" → Pull
+        ▼                                             │
+   ┌──────────────────────────────────────────────────┐
+   │      Gitee Private Repo (current PDF + notes)    │
+   └──────────────────────────────────────────────────┘
+```
+
+**First-time configuration (or just follow the prompts on first sync):**
+
+```jsonc
+// VS Code Settings.json
+{
+  "stealth-pdf.gitee.token": "Your Gitee Personal Access Token",  // Gitee → Settings → Tokens → check projects
+  "stealth-pdf.gitee.repo": "myname/my-notes",                    // Target repo, private repos supported
+  "stealth-pdf.gitee.branch": "master"                            // Sync branch, defaults to master
+}
+```
+
+- **Upload**: status bar "Sync" → Upload, pushes the current PDF and notes JSON into the repo's `StealthPDFSync/` directory.
+- **Pull**: status bar "Sync" → Pull, overwrites the local PDF with the cloud version and restores notes automatically.
+- Re-uploading the same PDF updates it in place (sha-based), no redundant history files.
 
 | Shortcut | Action | Description |
 |---|---|---|
@@ -241,7 +301,7 @@ Built specifically to handle multi-hundred-page documents without UI freezing:
 
 ### Method B: Terminal Command
 ```bash
-code --install-extension stealth-pdf-viewer-1.3.2.vsix
+code --install-extension stealth-pdf-viewer-1.4.0.vsix
 ```
 
 ---
@@ -250,7 +310,7 @@ code --install-extension stealth-pdf-viewer-1.3.2.vsix
 
 ```text
 ├── stealth-pdf-extension/     # VS Code extension source code
-│   ├── extension.js           # Core extension (CustomEditor, status bar, boss key, save pipeline)
+│   ├── extension.js           # Core extension (CustomEditor, status bar, boss key, save & Gitee sync pipeline)
 │   ├── package.json           # Extension manifest & configuration
 │   ├── icon.png               # Extension icon
 │   └── lib/                   # Offline PDF.js and PDF-Lib runtimes

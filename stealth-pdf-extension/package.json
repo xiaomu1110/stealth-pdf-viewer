@@ -2,7 +2,7 @@
   "name": "stealth-pdf-viewer",
   "displayName": "Log & Metrics Document Viewer",
   "description": "Cluster log and metrics documentation visualizer (Stealth PDF)",
-  "version": "1.3.2",
+  "version": "1.4.0",
   "publisher": "developer",
   "icon": "icon.png",
   "engines": {
@@ -46,8 +46,29 @@
       { "command": "stealth-pdf.undo", "title": "Stealth PDF: 撤销" },
       { "command": "stealth-pdf.toggleDark", "title": "Stealth PDF: 切换代码黑模式" },
       { "command": "stealth-pdf.save", "title": "Stealth PDF: 保存做题笔记" },
-      { "command": "stealth-pdf.bossToggle", "title": "Stealth PDF: 老板键切回题册" }
+      { "command": "stealth-pdf.bossToggle", "title": "Stealth PDF: 老板键切回题册" },
+      { "command": "stealth-pdf.syncCloud", "title": "Stealth PDF: 同步当前题册至 Gitee" }
     ],
+    "configuration": {
+      "title": "Stealth PDF Viewer",
+      "properties": {
+        "stealth-pdf.gitee.token": {
+          "type": "string",
+          "default": "",
+          "description": "Gitee 私人令牌 (Personal Access Token)，用于题册云同步"
+        },
+        "stealth-pdf.gitee.repo": {
+          "type": "string",
+          "default": "",
+          "description": "用于同步的 Gitee 仓库路径 (如: myname/my-notes)，支持私有仓库"
+        },
+        "stealth-pdf.gitee.branch": {
+          "type": "string",
+          "default": "master",
+          "description": "Gitee 同步分支"
+        }
+      }
+    },
     "keybindings": [
       {
         "command": "stealth-pdf.bossToggle",
