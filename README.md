@@ -7,7 +7,7 @@
 **Stealth PDF & Exam Practice Editor for VS Code & Web**
 
 [![VS Code](https://img.shields.io/badge/VS%20Code-%3E%3D1.75.0-007ACC.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
-[![Version](https://img.shields.io/badge/Version-v1.4.0-success.svg)](https://github.com/xiaomu1110/stealth-pdf-viewer/releases)
+[![Version](https://img.shields.io/badge/Version-v1.4.1-success.svg)](https://github.com/xiaomu1110/stealth-pdf-viewer/releases)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)]()
 [![Offline](https://img.shields.io/badge/Network-100%25%20Offline-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -135,6 +135,7 @@
 - **上传**：状态栏「同步」→ 选择上传，将当前 PDF 与笔记 JSON 推送到仓库 `StealthPDFSync/` 目录。
 - **拉取**：状态栏「同步」→ 选择拉取，云端版本覆盖本地并自动恢复笔记。
 - 同一题册重复上传自动覆盖更新（基于 sha），不会产生冗余历史文件。
+- **网络代理**：若公司网络直连 Gitee 超时，可设置 `stealth-pdf.gitee.proxy`（如 `http://127.0.0.1:7897`）；留空时自动使用 VS Code 的 `http.proxy` 设置与环境变量代理。
 
 | 快捷键 | 功能说明 | 使用场景 |
 |---|---|---|
@@ -157,7 +158,7 @@
 
 ### 方式 B：终端一键安装
 ```bash
-code --install-extension stealth-pdf-viewer-1.4.0.vsix
+code --install-extension stealth-pdf-viewer-1.4.1.vsix
 ```
 
 ---
@@ -301,7 +302,7 @@ Built specifically to handle multi-hundred-page documents without UI freezing:
 
 ### Method B: Terminal Command
 ```bash
-code --install-extension stealth-pdf-viewer-1.4.0.vsix
+code --install-extension stealth-pdf-viewer-1.4.1.vsix
 ```
 
 ---

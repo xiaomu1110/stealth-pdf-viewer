@@ -1,6 +1,8 @@
 const vscode = require('vscode');
 const path = require('path');
 const https = require('https');
+const http = require('http');
+const tls = require('tls');
 const { PDFDocument, degrees } = require('./lib/pdf-lib.min.js');
 
 let activePanel = null;
@@ -66,19 +68,71 @@ async function promptGiteeConfig(config) {
   return true;
 }
 
-function giteeRequest(method, pathname, payload) {
+function getGiteeProxy() {
+  // 优先级：插件专属代理 > VS Code http.proxy > 环境变量
+  const own = vscode.workspace.getConfiguration('stealth-pdf').get('gitee.proxy');
+  if (own) return own;
+  const ide = vscode.workspace.getConfiguration('http').get('proxy');
+  if (ide) return ide;
+  return process.env.HTTPS_PROXY || process.env.https_proxy
+    || process.env.HTTP_PROXY || process.env.http_proxy || '';
+}
+
+function connectViaProxy(proxyUrl, host, port) {
   return new Promise((resolve, reject) => {
-    const body = payload ? JSON.stringify(payload) : null;
-    const req = https.request({
-      hostname: 'gitee.com',
-      path: '/api/v5' + pathname,
-      method,
-      headers: Object.assign(
-        { 'Content-Type': 'application/json' },
-        body ? { 'Content-Length': Buffer.byteLength(body) } : {}
-      ),
-      timeout: 60000
-    }, (res) => {
+    let u;
+    try { u = new URL(proxyUrl); } catch (e) {
+      return reject(new Error('代理地址无效: ' + proxyUrl));
+    }
+    const headers = {};
+    if (u.username) {
+      headers['Proxy-Authorization'] = 'Basic ' + Buffer.from(
+        decodeURIComponent(u.username) + ':' + decodeURIComponent(u.password || '')
+      ).toString('base64');
+    }
+    const req = http.request({
+      host: u.hostname,
+      port: parseInt(u.port) || 80,
+      method: 'CONNECT',
+      path: host + ':' + port,
+      headers,
+      timeout: 30000
+    });
+    req.on('connect', (res, socket) => {
+      if (res.statusCode === 200) resolve(socket);
+      else {
+        socket.destroy();
+        reject(new Error('代理 CONNECT 失败 (HTTP ' + res.statusCode + ')'));
+      }
+    });
+    req.on('timeout', () => req.destroy(new Error('连接代理超时: ' + proxyUrl)));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function giteeRequest(method, pathname, payload) {
+  const body = payload ? JSON.stringify(payload) : null;
+  const options = {
+    hostname: 'gitee.com',
+    path: '/api/v5' + pathname,
+    method,
+    headers: Object.assign(
+      { 'Content-Type': 'application/json' },
+      body ? { 'Content-Length': Buffer.byteLength(body) } : {}
+    ),
+    timeout: 60000
+  };
+
+  const proxyUrl = getGiteeProxy();
+  if (proxyUrl) {
+    const socket = await connectViaProxy(proxyUrl, 'gitee.com', 443);
+    options.agent = false;
+    options.createConnection = () => tls.connect({ socket, servername: 'gitee.com' });
+  }
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
       let data = '';
       res.on('data', c => data += c);
       res.on('end', () => {
@@ -87,7 +141,13 @@ function giteeRequest(method, pathname, payload) {
         resolve({ status: res.statusCode, body: parsed });
       });
     });
-    req.on('timeout', () => req.destroy(new Error('连接 Gitee 超时')));
+    req.on('timeout', () => {
+      req.destroy(new Error(
+        '连接 Gitee 超时'
+        + (proxyUrl ? ' (经代理 ' + proxyUrl + ')' : ' (当前直连)')
+        + '，请检查网络或在设置中配置 stealth-pdf.gitee.proxy 或 http.proxy'
+      ));
+    });
     req.on('error', reject);
     if (body) req.write(body);
     req.end();

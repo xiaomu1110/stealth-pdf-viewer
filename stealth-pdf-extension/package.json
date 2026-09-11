@@ -2,7 +2,7 @@
   "name": "stealth-pdf-viewer",
   "displayName": "Log & Metrics Document Viewer",
   "description": "Cluster log and metrics documentation visualizer (Stealth PDF)",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "publisher": "developer",
   "icon": "icon.png",
   "engines": {
@@ -66,6 +66,11 @@
           "type": "string",
           "default": "master",
           "description": "Gitee 同步分支"
+        },
+        "stealth-pdf.gitee.proxy": {
+          "type": "string",
+          "default": "",
+          "description": "访问 Gitee 使用的 HTTP 代理 (如: http://127.0.0.1:7897)。留空时自动使用 VS Code 的 http.proxy 设置"
         }
       }
     },
