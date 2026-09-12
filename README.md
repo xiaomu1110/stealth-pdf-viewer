@@ -7,7 +7,7 @@
 **Stealth PDF & Exam Practice Editor for VS Code & Web**
 
 [![VS Code](https://img.shields.io/badge/VS%20Code-%3E%3D1.75.0-007ACC.svg?logo=visualstudiocode)](https://code.visualstudio.com/)
-[![Version](https://img.shields.io/badge/Version-v1.5.3-success.svg)](https://github.com/xiaomu1110/stealth-pdf-viewer/releases)
+[![Version](https://img.shields.io/badge/Version-v1.5.6-success.svg)](https://github.com/xiaomu1110/stealth-pdf-viewer/releases)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)]()
 [![Offline](https://img.shields.io/badge/Network-100%25%20Offline-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -161,7 +161,7 @@
 
 ### 方式 B：终端一键安装
 ```bash
-code --install-extension stealth-pdf-viewer-1.5.3.vsix
+code --install-extension stealth-pdf-viewer-1.5.6.vsix
 ```
 
 ---
@@ -307,7 +307,7 @@ Built specifically to handle multi-hundred-page documents without UI freezing:
 
 ### Method B: Terminal Command
 ```bash
-code --install-extension stealth-pdf-viewer-1.5.3.vsix
+code --install-extension stealth-pdf-viewer-1.5.6.vsix
 ```
 
 ---

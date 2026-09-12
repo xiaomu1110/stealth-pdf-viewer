@@ -2,7 +2,7 @@
   "name": "stealth-pdf-viewer",
   "displayName": "Log & Metrics Document Viewer",
   "description": "Cluster log and metrics documentation visualizer (Stealth PDF)",
-  "version": "1.5.5",
+  "version": "1.5.6",
   "publisher": "developer",
   "repository": {
     "type": "git",

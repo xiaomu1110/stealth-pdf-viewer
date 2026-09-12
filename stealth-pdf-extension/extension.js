@@ -3,6 +3,7 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const tls = require('tls');
+const crypto = require('crypto');
 const { PDFDocument, degrees } = require('./lib/pdf-lib.min.js');
 
 let activePanel = null;
@@ -12,22 +13,63 @@ let isBossActive = false;
 let reloadActivePdf = null;
 const statusItems = {};
 
-async function getDoodles(context, filePath) {
-  try {
-    const hash = Buffer.from(filePath).toString('hex');
-    const doodleUri = vscode.Uri.joinPath(context.globalStorageUri, `${hash}.json`);
-    const bytes = await vscode.workspace.fs.readFile(doodleUri);
-    return JSON.parse(Buffer.from(bytes).toString('utf8'));
-  } catch (e) {
-    return {};
+// ===================== 题册内容指纹与笔记持久化 =====================
+
+function getPdfBookId(fileBytes, filePath) {
+  if (!fileBytes || fileBytes.length === 0) {
+    return 'book_' + Buffer.from(filePath || '').toString('hex').slice(0, 16);
   }
+  // 1. 若 trailer 中包含固定 /ID，优先作为全生命周期不变的永久书本指纹
+  const tail = fileBytes.slice(Math.max(0, fileBytes.length - 8192)).toString('latin1');
+  const m = tail.match(/\/ID\s*\[\s*<([0-9a-fA-F]{8,})>/i);
+  if (m) {
+    return 'book_' + m[1].slice(0, 16).toLowerCase();
+  }
+  // 2. 基于文件核心特征哈希（前 64KB + 尾 64KB + 体积，重命名/移动目录指纹 100% 相同）
+  const hash = crypto.createHash('sha256');
+  if (fileBytes.length <= 10 * 1024 * 1024) {
+    hash.update(fileBytes);
+  } else {
+    hash.update(fileBytes.slice(0, 65536));
+    hash.update(fileBytes.slice(fileBytes.length - 65536));
+    hash.update(String(fileBytes.length));
+  }
+  return 'book_' + hash.digest('hex').slice(0, 16);
 }
 
-async function saveDoodles(context, filePath, doodles) {
+async function getDoodles(context, fileUri, fileBytes) {
+  const filePath = fileUri ? fileUri.fsPath : '';
+  const bookId = getPdfBookId(fileBytes, filePath);
+
+  // 1. 优先按内容指纹书本 ID 读取笔记（改名/移目录依然无缝识别）
+  try {
+    const doodleUri = vscode.Uri.joinPath(context.globalStorageUri, `${bookId}.json`);
+    const bytes = await vscode.workspace.fs.readFile(doodleUri);
+    return { bookId, doodles: JSON.parse(Buffer.from(bytes).toString('utf8')) };
+  } catch (e) {}
+
+  // 2. 兼容旧版本：若存在按绝对路径哈希存储的历史笔记，自动无缝迁移至内容指纹
+  if (filePath) {
+    try {
+      const legacyHash = Buffer.from(filePath).toString('hex');
+      const legacyUri = vscode.Uri.joinPath(context.globalStorageUri, `${legacyHash}.json`);
+      const bytes = await vscode.workspace.fs.readFile(legacyUri);
+      const legacyDoodles = JSON.parse(Buffer.from(bytes).toString('utf8'));
+      await saveDoodles(context, bookId, legacyDoodles);
+      return { bookId, doodles: legacyDoodles };
+    } catch (e) {}
+  }
+
+  return { bookId, doodles: {} };
+}
+
+async function saveDoodles(context, bookIdOrPath, doodles) {
   try {
     await vscode.workspace.fs.createDirectory(context.globalStorageUri);
-    const hash = Buffer.from(filePath).toString('hex');
-    const doodleUri = vscode.Uri.joinPath(context.globalStorageUri, `${hash}.json`);
+    const key = (bookIdOrPath && bookIdOrPath.startsWith('book_'))
+      ? bookIdOrPath
+      : Buffer.from(bookIdOrPath || '').toString('hex');
+    const doodleUri = vscode.Uri.joinPath(context.globalStorageUri, `${key}.json`);
     const content = Buffer.from(JSON.stringify(doodles), 'utf8');
     await vscode.workspace.fs.writeFile(doodleUri, content);
   } catch (e) {
@@ -292,31 +334,84 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-async function listGiteeBooks(config) {
-  const encPath = encodeURIComponent('StealthPDFSync');
-  const branchParam = config.branch ? `&ref=${encodeURIComponent(config.branch)}` : '';
-  const query = `?access_token=${encodeURIComponent(config.token)}${branchParam}`;
-  const res = await giteeRequest('GET', `/repos/${config.repo}/contents/${encPath}${query}`);
-  if (res.status === 404) return [];
-  if (res.status !== 200 || !Array.isArray(res.body)) {
-    throw new Error(giteeErrMsg(res, '获取云端题册列表失败'));
-  }
+async function getCloudManifest(config) {
+  try {
+    const raw = await downloadFromGitee(config, 'StealthPDFSync/manifest.json');
+    if (raw) return JSON.parse(raw.toString('utf8'));
+  } catch (e) {}
+  return { version: 1, books: {} };
+}
 
-  const books = [];
-  for (const item of res.body) {
-    if (item.type === 'file' && item.name && item.name.toLowerCase().endsWith('.pdf')) {
-      const match = item.name.match(/^[0-9a-fA-F]{12}_(.*\.pdf)$/i);
-      const displayName = match ? match[1] : item.name;
-      books.push({
-        displayName,
-        fileName: item.name,
-        path: item.path,
-        size: item.size || 0,
-        sha: item.sha
+async function updateCloudManifest(config, bookMeta) {
+  try {
+    const manifest = await getCloudManifest(config);
+    manifest.books = manifest.books || {};
+    manifest.books[bookMeta.id] = Object.assign(
+      {},
+      manifest.books[bookMeta.id] || {},
+      bookMeta,
+      { updatedAt: new Date().toISOString() }
+    );
+    const content = Buffer.from(JSON.stringify(manifest, null, 2), 'utf8');
+    await uploadToGitee(config, 'StealthPDFSync/manifest.json', content, `update manifest: ${bookMeta.title}`);
+  } catch (e) {
+    console.warn('更新云端目录索引失败:', e);
+  }
+}
+
+async function listGiteeBooks(config) {
+  const manifest = await getCloudManifest(config);
+  const booksMap = new Map();
+
+  // 1. 优先读取 manifest 索引中的清晰书籍信息
+  if (manifest && manifest.books) {
+    for (const [id, meta] of Object.entries(manifest.books)) {
+      booksMap.set(id, {
+        bookId: id,
+        displayName: meta.title || id,
+        fileName: `${id}.pdf`,
+        path: meta.pdfPath || `StealthPDFSync/${id}.pdf`,
+        notesPath: meta.notesPath || `StealthPDFSync/${id}.notes.json`,
+        size: meta.size || 0,
+        updatedAt: meta.updatedAt
       });
     }
   }
-  return books;
+
+  // 2. 扫描 StealthPDFSync 目录发现可能存在的历史/手动上传文件
+  try {
+    const encPath = encodeURIComponent('StealthPDFSync');
+    const branchParam = config.branch ? `&ref=${encodeURIComponent(config.branch)}` : '';
+    const query = `?access_token=${encodeURIComponent(config.token)}${branchParam}`;
+    const res = await giteeRequest('GET', `/repos/${config.repo}/contents/${encPath}${query}`);
+    if (res.status === 200 && Array.isArray(res.body)) {
+      for (const item of res.body) {
+        if (item.type === 'file' && item.name && item.name.toLowerCase().endsWith('.pdf')) {
+          let displayName = item.name;
+          let bookId = item.name.replace(/\.pdf$/i, '');
+          const match = item.name.match(/^[0-9a-fA-F]{12}_(.*\.pdf)$/i);
+          if (match) {
+            displayName = match[1];
+          } else if (item.name.startsWith('book_')) {
+            bookId = item.name.slice(0, item.name.indexOf('.pdf'));
+          }
+
+          if (!booksMap.has(bookId)) {
+            booksMap.set(bookId, {
+              bookId,
+              displayName,
+              fileName: item.name,
+              path: item.path,
+              notesPath: item.path.replace(/\.pdf$/i, '.notes.json'),
+              size: item.size || 0
+            });
+          }
+        }
+      }
+    }
+  } catch (e) {}
+
+  return Array.from(booksMap.values());
 }
 
 async function downloadBookFromCloud(context) {
@@ -346,8 +441,8 @@ async function downloadBookFromCloud(context) {
   const pick = await vscode.window.showQuickPick(
     books.map(b => ({
       label: `$(file-pdf) ${b.displayName}`,
-      description: formatBytes(b.size),
-      detail: `云端文件: ${b.fileName}`,
+      description: formatBytes(b.size) + (b.updatedAt ? ` · ${new Date(b.updatedAt).toLocaleDateString()}` : ''),
+      detail: `云端标识: ${b.bookId || b.fileName}`,
       book: b
     })),
     { placeHolder: '选择要拉取到本地的云端题册' }
@@ -373,19 +468,21 @@ async function downloadBookFromCloud(context) {
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `正在从 Gitee 下载: ${targetBook.displayName}` },
       async (progress) => {
-        progress.report({ message: '正在下载 PDF 文件...' });
+        progress.report({ message: '正在下载题册 PDF 文件...' });
         const pdfBytes = await downloadFromGitee(config, targetBook.path);
         if (!pdfBytes) {
           throw new Error('下载文件内容为空');
         }
         await vscode.workspace.fs.writeFile(saveUri, pdfBytes);
 
-        progress.report({ message: '正在检查并恢复笔记...' });
-        const remoteNotes = await downloadFromGitee(config, targetBook.path + '.notes.json');
+        progress.report({ message: '正在恢复做题笔记...' });
+        const bookId = targetBook.bookId || getPdfBookId(pdfBytes, saveUri.fsPath);
+        const notesPath = targetBook.notesPath || targetBook.path.replace(/\.pdf$/i, '.notes.json');
+        const remoteNotes = await downloadFromGitee(config, notesPath);
         if (remoteNotes) {
           try {
             const parsed = JSON.parse(remoteNotes.toString('utf8'));
-            await saveDoodles(context, saveUri.fsPath, parsed);
+            await saveDoodles(context, bookId, parsed);
           } catch (e) {
             console.warn('解析云端笔记失败:', e);
           }
@@ -418,65 +515,109 @@ async function cloudSyncCurrentPdf(context) {
     if (!await promptGiteeConfig(config)) return;
   }
 
-  const pick = await vscode.window.showQuickPick([
-    { label: '$(cloud-upload) 上传当前题册到云端', detail: '将当前 PDF 及做题笔记推送至 Gitee 仓库', action: 'push' },
-    { label: '$(cloud-download) 从云端拉取当前题册', detail: '用云端版本覆盖本地 PDF 并恢复笔记', action: 'pull' }
-  ], { placeHolder: 'Gitee 云同步（仅同步当前打开的 PDF 及其笔记，不影响其他文件）' });
-  if (!pick) return;
-
+  const fileBytes = Buffer.from(await vscode.workspace.fs.readFile(activeFileUri));
+  const bookId = getPdfBookId(fileBytes, activeFileUri.fsPath);
   const fileName = path.basename(activeFileUri.fsPath);
-  const cloudPath = `StealthPDFSync/${Buffer.from(activeFileUri.fsPath).toString('hex').slice(0, 12)}_${fileName}`;
+
+  const cloudPdfPath = `StealthPDFSync/${bookId}.pdf`;
+  const cloudNotesPath = `StealthPDFSync/${bookId}.notes.json`;
+
+  const pick = await vscode.window.showQuickPick([
+    {
+      label: '$(cloud-upload) 快速增量同步做题笔记',
+      detail: '仅上传做题笔记（毫秒级极速，云端若无底本会自动补传整本 PDF）',
+      action: 'smart_push'
+    },
+    {
+      label: '$(file-pdf) 完整重新上传题册底本与笔记',
+      detail: '强制重新推送整本原始 PDF 文件及其全部笔记至 Gitee 仓库',
+      action: 'force_push'
+    },
+    {
+      label: '$(cloud-download) 从云端拉取更新到本地',
+      detail: '从 Gitee 下载云端最新笔迹覆盖本地（改名或换电脑自动识别）',
+      action: 'pull'
+    }
+  ], { placeHolder: `Gitee 云同步: ${fileName}` });
+  if (!pick) return;
 
   try {
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Gitee 云同步: ${fileName}` },
-      async () => {
-        if (pick.action === 'push') {
-          const pdfBytes = Buffer.from(await vscode.workspace.fs.readFile(activeFileUri));
-          await uploadToGitee(config, cloudPath, pdfBytes, `sync: ${fileName}`);
+      async (progress) => {
+        if (pick.action === 'smart_push' || pick.action === 'force_push') {
+          let needUploadPdf = (pick.action === 'force_push');
 
-          const doodles = await getDoodles(context, activeFileUri.fsPath);
-          if (Object.keys(doodles).length > 0) {
-            const notesBuf = Buffer.from(JSON.stringify(doodles), 'utf8');
-            await uploadToGitee(config, cloudPath + '.notes.json', notesBuf, `sync notes: ${fileName}`);
+          if (!needUploadPdf) {
+            progress.report({ message: '检查云端题册底本...' });
+            try {
+              const remotePdf = await downloadFromGitee(config, cloudPdfPath);
+              if (!remotePdf) needUploadPdf = true;
+            } catch (e) {
+              needUploadPdf = true;
+            }
           }
-          vscode.window.setStatusBarMessage(`$(check) 题册已同步至 Gitee: ${fileName}`, 4000);
-        } else {
-          let remote = await downloadFromGitee(config, cloudPath);
-          let actualCloudPath = cloudPath;
 
-          if (!remote) {
+          if (needUploadPdf) {
+            progress.report({ message: `正在上传题册底本 (${formatBytes(fileBytes.length)})...` });
+            await uploadToGitee(config, cloudPdfPath, fileBytes, `upload book: ${fileName}`);
+          }
+
+          progress.report({ message: '正在同步做题笔记...' });
+          const doodleInfo = await getDoodles(context, activeFileUri, fileBytes);
+          const notesBuf = Buffer.from(JSON.stringify(doodleInfo.doodles), 'utf8');
+          await uploadToGitee(config, cloudNotesPath, notesBuf, `sync notes: ${fileName}`);
+
+          await updateCloudManifest(config, {
+            id: bookId,
+            title: fileName,
+            size: fileBytes.length,
+            pdfPath: cloudPdfPath,
+            notesPath: cloudNotesPath
+          });
+
+          if (needUploadPdf) {
+            vscode.window.setStatusBarMessage(`$(check) 题册底本与做题笔记已完整同步至 Gitee: ${fileName}`, 4000);
+          } else {
+            vscode.window.setStatusBarMessage(`$(check) 笔记已秒级同步至 Gitee (题册底本已在云端，免传整书)`, 4000);
+          }
+        } else {
+          progress.report({ message: '正在检查云端笔记与底本...' });
+          let remoteNotes = await downloadFromGitee(config, cloudNotesPath);
+          let actualPdfPath = cloudPdfPath;
+
+          // 兼容历史按绝对路径哈希存储的云端文件
+          if (!remoteNotes) {
+            try {
+              const legacyCloudPath = `StealthPDFSync/${Buffer.from(activeFileUri.fsPath).toString('hex').slice(0, 12)}_${fileName}`;
+              remoteNotes = await downloadFromGitee(config, legacyCloudPath + '.notes.json');
+              if (remoteNotes) actualPdfPath = legacyCloudPath;
+            } catch (e) {}
+          }
+
+          if (!remoteNotes) {
+            // 尝试按书名匹配
             try {
               const books = await listGiteeBooks(config);
               const matched = books.filter(b => b.displayName === fileName || b.fileName.endsWith('_' + fileName));
-              if (matched.length === 1) {
-                actualCloudPath = matched[0].path;
-                remote = await downloadFromGitee(config, actualCloudPath);
-              } else if (matched.length > 1) {
-                const choice = await vscode.window.showQuickPick(
-                  matched.map(b => ({ label: `$(file-pdf) ${b.displayName}`, detail: b.path, book: b })),
-                  { placeHolder: '在云端发现多个同名题册，请选择要拉取的版本:' }
-                );
-                if (choice) {
-                  actualCloudPath = choice.book.path;
-                  remote = await downloadFromGitee(config, actualCloudPath);
-                }
+              if (matched.length > 0) {
+                actualPdfPath = matched[0].path;
+                remoteNotes = await downloadFromGitee(config, actualPdfPath.replace(/\.pdf$/i, '.notes.json'));
               }
             } catch (e) {}
           }
 
-          if (!remote) {
-            vscode.window.showWarningMessage('云端未找到该题册，请先在其他设备上传');
-            return;
-          }
-          await vscode.workspace.fs.writeFile(activeFileUri, remote);
-
-          const remoteNotes = await downloadFromGitee(config, actualCloudPath + '.notes.json');
           if (remoteNotes) {
-            await saveDoodles(context, activeFileUri.fsPath, JSON.parse(remoteNotes.toString('utf8')));
+            try {
+              const parsed = JSON.parse(remoteNotes.toString('utf8'));
+              await saveDoodles(context, bookId, parsed);
+            } catch (e) {
+              console.warn('解析云端笔记失败:', e);
+            }
           }
+
           if (reloadActivePdf) reloadActivePdf();
-          vscode.window.setStatusBarMessage(`$(check) 已从 Gitee 拉取题册: ${fileName}`, 4000);
+          vscode.window.setStatusBarMessage(`$(check) 已从 Gitee 恢复最新做题笔记: ${fileName}`, 4000);
         }
       }
     );
@@ -787,13 +928,16 @@ function setupEditorPanel(context, panel, fileUri) {
   const stateKey = 'pdf_state:' + fileUri.fsPath;
   const savedState = context.globalState.get(stateKey) || {};
 
+  let currentBookId = '';
   let cachedDoodles = {};
   let pendingPdfData = null;
 
   async function loadFile() {
     try {
-      cachedDoodles = await getDoodles(context, fileUri.fsPath);
       const fileBytes = await vscode.workspace.fs.readFile(fileUri);
+      const doodleInfo = await getDoodles(context, fileUri, fileBytes);
+      currentBookId = doodleInfo.bookId;
+      cachedDoodles = doodleInfo.doodles;
       const base64Data = Buffer.from(fileBytes).toString('base64');
       const fileName = path.basename(fileUri.fsPath);
 
@@ -898,13 +1042,13 @@ function setupEditorPanel(context, panel, fileUri) {
       } else {
         delete cachedDoodles[message.page];
       }
-      await saveDoodles(context, fileUri.fsPath, cachedDoodles);
+      await saveDoodles(context, currentBookId || fileUri.fsPath, cachedDoodles);
     } else if (message.type === 'savePdf') {
       try {
         if (message.doodles) {
           cachedDoodles = { ...cachedDoodles, ...message.doodles };
         }
-        await saveDoodles(context, fileUri.fsPath, cachedDoodles);
+        await saveDoodles(context, currentBookId || fileUri.fsPath, cachedDoodles);
 
         const embedded = await saveDoodlesToPdf(fileUri, cachedDoodles);
         if (!embedded) {

@@ -475,6 +475,16 @@
     }
 
     function getStorageKey() {
+      if (originalPdfBytes && originalPdfBytes.length > 0) {
+        let hash = 0;
+        const len = originalPdfBytes.length;
+        const sampleLen = Math.min(len, 65536);
+        for (let i = 0; i < sampleLen; i += 16) {
+          hash = ((hash << 5) - hash) + originalPdfBytes[i];
+          hash |= 0;
+        }
+        return 'stealth_pdf_doodles_' + Math.abs(hash) + '_' + len;
+      }
       return 'stealth_pdf_doodles_' + (originalFileName || 'default');
     }
     function autoSaveDoodles() {
